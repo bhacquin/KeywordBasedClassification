@@ -49,7 +49,9 @@ class LOTClassTrainer(object):
                                                    output_attentions=False,
                                                    output_hidden_states=False,
                                                    num_labels=self.num_class)
-        self.read_data(args.dataset_dir, args.train_file, args.test_file, args.test_label_file)
+        self.with_train_label = True if args.train_label_file is not None else False
+
+        self.read_data(args.dataset_dir, args.train_file,args.train_label_file, args.test_file, args.test_label_file)
         self.with_test_label = True if args.test_label_file is not None else False
         self.temp_dir = f'tmp_{self.dist_port}'
         self.mcp_loss = nn.CrossEntropyLoss()
@@ -194,8 +196,8 @@ class LOTClassTrainer(object):
         return input_ids_with_label_name, attention_masks_with_label_name, label_name_idx
 
     # read text corpus and labels from files
-    def read_data(self, dataset_dir, train_file, test_file, test_label_file):
-        self.train_data, self.label_name_data = self.create_dataset(dataset_dir, train_file, None, "train.pt", 
+    def read_data(self, dataset_dir, train_file, train_label_file, test_file, test_label_file):
+        self.train_data, self.label_name_data = self.create_dataset(dataset_dir, train_file, train_label_file, "train.pt", 
                                                                     find_label_name=True, label_name_loader_name="label_name_data.pt")
         if test_file is not None:
             self.test_data = self.create_dataset(dataset_dir, test_file, test_label_file, "test.pt")
@@ -310,14 +312,149 @@ class LOTClassTrainer(object):
         for i, category_vocab in self.category_vocab.items():
             print(f"Class {i} category vocabulary: {[self.inv_vocab[w] for w in category_vocab]}\n")
 
+    # Construct negative class
+
+
+    # find label name indices and replace out-of-vocab label names with [MASK]
+    def no_label_name_in_doc(self, doc,top_pred_name = 50, category_vocab_size = 100, loader_name="category_vocab.pt"):
+        loader_file = os.path.join(self.dataset_dir, loader_name)
+        if os.path.exists(loader_file):
+            print(f"Loading category vocabulary from {loader_file}")
+            self.category_vocab = torch.load(loader_file)
+        else:
+            print("Contructing category vocabulary.")
+            self.category_vocabulary(top_pred_num,category_vocab_size)
+
+        self.list_pos_keyword = []
+        for category_vocab in self.category_vocab.items():
+            for w in category_vocab:
+                self.list_pos_keyword.append(w)
+        doc = self.tokenizer.tokenize(doc)
+        label_idx = -1 * torch.ones(self.max_len, dtype=torch.long)
+        new_doc = []
+        wordpcs = []
+        idx = 1 # index starts at 1 due to [CLS] token
+        for i, wordpc in enumerate(doc):
+            wordpcs.append(wordpc[2:] if wordpc.startswith("##") else wordpc)
+            if idx >= self.max_len - 1: # last index will be [SEP] token
+                break
+            if i == len(doc) - 1 or not doc[i+1].startswith("##"):
+                word = ''.join(wordpcs)
+                if word in self.list_pos_keyword:
+                    label_idx[idx] = 0
+                    # replace label names that are not in tokenizer's vocabulary with the [MASK] token
+                    if word not in self.vocab:
+                        wordpcs = [self.tokenizer.mask_token]
+                new_word = ''.join(wordpcs)
+                if new_word != self.tokenizer.unk_token:
+                    idx += len(wordpcs)
+                    new_doc.append(new_word)
+                wordpcs = []
+        for i in random.select(new_doc, 1):
+            new_doc[i] = self.tokenizer.mask_token
+        if (label_idx >= 0).any():
+            return None
+        else:
+            return ' '.join(new_doc), label_idx
+
+
+    def no_label_name_occurrence(self, rank, top_pred_num=50, loader_name="negative_train.pt"):
+
+        text_with_no_label = []
+        no_label_name_idx = []
+        for doc in docs:
+            result = self.no_label_name_in_doc(doc)
+            if result is not None:
+                text_with_label.append(result[0])
+                label_name_idx.append(result[1].unsqueeze(0))
+        if len(text_with_no_label) > 0:
+            encoded_dict = self.tokenizer.batch_encode_plus(text_with_no_label, add_special_tokens=True, max_length=self.max_len, 
+                                                            padding='max_length', return_attention_mask=True, truncation=True, return_tensors='pt')
+            input_ids_with_no_label_name = encoded_dict['input_ids']
+            attention_masks_with_no_label_name = encoded_dict['attention_mask']
+            no_label_name_idx = torch.cat(label_name_idx, dim=0)
+        else:
+            input_ids_with_no_label_name = torch.ones(0, self.max_len, dtype=torch.long)
+            attention_masks_with_no_label_name = torch.ones(0, self.max_len, dtype=torch.long)
+            no_label_name_idx = torch.ones(0, self.max_len, dtype=torch.long)
+        return input_ids_with_no_label_name, attention_masks_with_no_label_name, no_label_name_idx
+
+
+
+    def create_dataset_with_negative(self, dataset_dir, text_file, label_file, loader_name='train.pt', label_name_loader_name='negative_data.pt'):
+        
+        ### Should have been already done, just a double check
+        loader_file = os.path.join(dataset_dir, loader_name)
+        if os.path.exists(loader_file):
+            print(f"Loading encoded texts from {loader_file}")
+            data = torch.load(loader_file)
+        else:
+            print(f"Reading texts from {os.path.join(dataset_dir, text_file)}")
+            corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
+            docs = [doc.strip() for doc in corpus.readlines()]
+            print(f"Converting texts into tensors.")
+            chunk_size = ceil(len(docs) / self.num_cpus)
+            chunks = [docs[x:x+chunk_size] for x in range(0, len(docs), chunk_size)]
+            results = Parallel(n_jobs=self.num_cpus)(delayed(self.encode)(docs=chunk) for chunk in chunks)
+            input_ids = torch.cat([result[0] for result in results])
+            attention_masks = torch.cat([result[1] for result in results])
+            print(f"Saving encoded texts into {loader_file}")
+            if label_file is not None:
+                print(f"Reading labels from {os.path.join(dataset_dir, label_file)}")
+                truth = open(os.path.join(dataset_dir, label_file))
+                labels = [int(label.strip()) for label in truth.readlines()]
+                labels = torch.tensor(labels)
+                data = {"input_ids": input_ids, "attention_masks": attention_masks, "labels": labels}
+            else:
+                data = {"input_ids": input_ids, "attention_masks": attention_masks}
+            torch.save(data, loader_file)
+
+        ### Generate dataset with only negative text
+        print(f"Reading texts from {os.path.join(dataset_dir, text_file)}")
+        corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
+        docs = [doc.strip() for doc in corpus.readlines()]
+        print("Locating label names in the corpus.")
+        chunk_size = ceil(len(docs) / self.num_cpus)
+        chunks = [docs[x:x+chunk_size] for x in range(0, len(docs), chunk_size)]
+        print('Start checking for negative texts')
+        results = Parallel(n_jobs=self.num_cpus)(delayed(self.no_label_name_occurrence)(docs=chunk) for chunk in chunks)
+        input_ids_with_label_name = torch.cat([result[0] for result in results])
+        attention_masks_with_label_name = torch.cat([result[1] for result in results])
+        label_name_idx = torch.cat([result[2] for result in results])
+        assert len(input_ids_with_label_name) > 0, "No label names appear in corpus!"
+        label_name_data = {"input_ids": input_ids_with_label_name, "attention_masks": attention_masks_with_label_name, "labels": label_name_idx}
+        loader_file = os.path.join(dataset_dir, label_name_loader_name)
+        print(f"Saving texts with label names into {loader_file}")
+        torch.save(label_name_data, loader_file)
+        return data, label_name_data
+
+
+    def create_dataloader_with_negative(self,rank, data_dict_labels, data_dict_neg):
+        ### labels
+
+        
+        dataset_labels = TensorDataset(data_dict_labels["input_ids"], data_dict_labels["attention_masks"], data_dict_labels["labels"])
+        dataset_neg = TensorDataset(data_dict_neg["input_ids"], data_dict_neg["attention_masks"],data_dict_neg["labels"])
+
+        sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=rank)
+        dataset_loader = DataLoader(dataset, sampler=sampler, batch_size=batch_size, shuffle=False)
+        return dataset_loader
+
     # prepare self supervision for masked category prediction (distributed function)
     def prepare_mcp_dist(self, rank, top_pred_num=50, match_threshold=20, loader_name="mcp_train.pt"):
         model = self.set_up_dist(rank)
         model.eval()
         train_dataset_loader = self.make_dataloader(rank, self.train_data, self.eval_batch_size)
+        if len(train_dataset_loader.dataset[0]) == 3:
+            label_present = True
+            print('train label present in the dataset')
+        else :
+            label_present = False
+            print('No ground truth label present in the dataset')
         all_input_ids = []
         all_mask_label = []
         all_input_mask = []
+        all_input_labels = []
         category_doc_num = defaultdict(int)
         wrap_train_dataset_loader = tqdm(train_dataset_loader) if rank == 0 else train_dataset_loader
         try:
@@ -325,6 +462,8 @@ class LOTClassTrainer(object):
                 with torch.no_grad():
                     input_ids = batch[0].to(rank)
                     input_mask = batch[1].to(rank)
+                    if label_present:
+                        input_labels = batch[2].to(rank)
                     predictions = model(input_ids,
                                         pred_mode="mlm",
                                         token_type_ids=None,
@@ -343,15 +482,21 @@ class LOTClassTrainer(object):
                             all_input_ids.append(input_ids[valid_doc].cpu())
                             all_mask_label.append(mask_label[valid_doc].cpu())
                             all_input_mask.append(input_mask[valid_doc].cpu())
+                            if label_present:
+                                all_input_labels.append(input_labels[valid_doc].cpu())
                             category_doc_num[i] += valid_doc.int().sum().item()
             all_input_ids = torch.cat(all_input_ids, dim=0)
             all_mask_label = torch.cat(all_mask_label, dim=0)
             all_input_mask = torch.cat(all_input_mask, dim=0)
+            if label_present:
+                all_input_labels = torch.cat(all_input_labels, dim=0)
+
             save_dict = {
                 "all_input_ids": all_input_ids,
                 "all_mask_label": all_mask_label,
                 "all_input_mask": all_input_mask,
                 "category_doc_num": category_doc_num,
+                "true_label_class": all_input_labels,
             }
             save_file = os.path.join(self.temp_dir, f"{rank}_"+loader_name)
             torch.save(save_dict, save_file)
