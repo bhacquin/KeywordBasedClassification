@@ -524,12 +524,16 @@ class LOTClassTrainer(object):
             all_mask_label = torch.cat([res["all_mask_label"] for res in gather_res], dim=0)
             all_input_mask = torch.cat([res["all_input_mask"] for res in gather_res], dim=0)
             category_doc_num = {i: 0 for i in range(self.num_class)}
+            try:
+                ground_truth_label = torch.cat([res['true_label_class'] for res in gather_res], dim=0)
+            except:
+                print("No ground_truth given")
             for i in category_doc_num:
                 for res in gather_res:
                     if i in res["category_doc_num"]:
                         category_doc_num[i] += res["category_doc_num"][i]
             print(f"Number of documents with category indicative terms found for each category is: {category_doc_num}")
-            self.mcp_data = {"input_ids": all_input_ids, "attention_masks": all_input_mask, "labels": all_mask_label}
+            self.mcp_data = {"input_ids": all_input_ids, "attention_masks": all_input_mask, "labels": all_mask_label, "ground_truth": ground_truth_label}
             torch.save(self.mcp_data, loader_file)
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
