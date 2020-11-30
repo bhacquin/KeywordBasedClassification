@@ -58,7 +58,7 @@ class LOTClassTrainer(object):
         self.st_loss = nn.KLDivLoss(reduction='batchmean')
         self.update_interval = args.update_interval
         self.early_stop = args.early_stop
-
+        self.non_accepted_words = []#[2974, 2374,2998,4368,2449] # TO DO FUNCTION TO RETRIEVE THOSE
     # set up distributed training
     def set_up_dist(self, rank):
         dist.init_process_group(
@@ -306,6 +306,16 @@ class LOTClassTrainer(object):
                     for word_id, freq in category_words_freq[i].items():
                         self.category_words_freq[i][word_id] += freq
             self.filter_keywords(category_vocab_size)
+            new_category_vocab = {}
+            for i, category_vocab in self.category_vocab.items():
+                temp_category_vocab = []
+                for j, w in enumerate(category_vocab):
+                    if w in self.non_accepted_words:
+                        continue
+                    else:
+                        temp_category_vocab.append(w)
+                new_category_vocab[i] = np.array(temp_category_vocab)
+            self.category_vocab = new_category_vocab
             torch.save(self.category_vocab, loader_file)
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
