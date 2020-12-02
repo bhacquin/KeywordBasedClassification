@@ -58,7 +58,10 @@ class LOTClassTrainer(object):
         self.st_loss = nn.KLDivLoss(reduction='batchmean')
         self.update_interval = args.update_interval
         self.early_stop = args.early_stop
-        self.non_accepted_words = []#[2974, 2374,2998,4368,2449] # TO DO FUNCTION TO RETRIEVE THOSE
+        self.non_accepted_words = []
+        self.vocab_loop_counter = 0 #[2974, 2374,2998,4368,2449] # TO DO FUNCTION TO RETRIEVE THOSE
+        self.loop_over_vocab = args.loop_over_vocab
+        self.label_names_used = {}
     # set up distributed training
     def set_up_dist(self, rank):
         dist.init_process_group(
@@ -96,9 +99,9 @@ class LOTClassTrainer(object):
         return strings
 
     # convert dataset into tensors
-    def create_dataset(self, dataset_dir, text_file, label_file, loader_name, find_label_name=False, label_name_loader_name=None):
+    def create_dataset(self, dataset_dir, text_file, label_file, loader_name, find_label_name=False, label_name_loader_name=None, check_exist=True):
         loader_file = os.path.join(dataset_dir, loader_name)
-        if os.path.exists(loader_file):
+        if os.path.exists(loader_file) and check_exist:
             print(f"Loading encoded texts from {loader_file}")
             data = torch.load(loader_file)
         else:
@@ -123,7 +126,7 @@ class LOTClassTrainer(object):
             torch.save(data, loader_file)
         if find_label_name:
             loader_file = os.path.join(dataset_dir, label_name_loader_name)
-            if os.path.exists(loader_file):
+            if os.path.exists(loader_file) and check_exist:
                 print(f"Loading texts with label names from {loader_file}")
                 label_name_data = torch.load(loader_file)
             else:
@@ -196,11 +199,11 @@ class LOTClassTrainer(object):
         return input_ids_with_label_name, attention_masks_with_label_name, label_name_idx
 
     # read text corpus and labels from files
-    def read_data(self, dataset_dir, train_file, train_label_file, test_file, test_label_file):
+    def read_data(self, dataset_dir, train_file, train_label_file, test_file, test_label_file, check_exist = True):
         self.train_data, self.label_name_data = self.create_dataset(dataset_dir, train_file, train_label_file, "train.pt", 
-                                                                    find_label_name=True, label_name_loader_name="label_name_data.pt")
+                                                                    find_label_name=True, label_name_loader_name="label_name_data.pt", check_exist = check_exist)
         if test_file is not None:
-            self.test_data = self.create_dataset(dataset_dir, test_file, test_label_file, "test.pt")
+            self.test_data = self.create_dataset(dataset_dir, test_file, test_label_file, "test.pt", check_exist = check_exist)
 
     # read label names from file
     def read_label_names(self, dataset_dir, label_name_file):
@@ -285,11 +288,12 @@ class LOTClassTrainer(object):
             self.cuda_mem_error(err, "eval", rank)
 
     # construct category vocabulary
-    def category_vocabulary(self, top_pred_num=50, category_vocab_size=100, loader_name="category_vocab.pt"):
+    def category_vocabulary(self, top_pred_num=50, category_vocab_size=100, loader_name="category_vocab.pt", loader_freq_name="category_vocab_freq.pt", check_exist = True):
         loader_file = os.path.join(self.dataset_dir, loader_name)
-        if os.path.exists(loader_file):
+        if os.path.exists(loader_file) and check_exist:
             print(f"Loading category vocabulary from {loader_file}")
             self.category_vocab = torch.load(loader_file)
+            self.category_words_freq = torch.load(os.path.join(self.dataset_dir, loader_freq_name))
         else:
             print("Contructing category vocabulary.")
             if not os.path.exists(self.temp_dir):
@@ -305,150 +309,70 @@ class LOTClassTrainer(object):
                 for category_words_freq in gather_res:
                     for word_id, freq in category_words_freq[i].items():
                         self.category_words_freq[i][word_id] += freq
+            print('loop', self.vocab_loop_counter)
+            if self.vocab_loop_counter == 0:
+                self.old_category_vocab_freq = self.category_words_freq
+                for i in range(self.num_class):
+                    self.label_names_used[i] = []
+                self.vocab_loop_counter += 1
+            else:
+                self.vocab_loop_counter += 1
+                for i in range(self.num_class):
+                    for word_id, freq in self.old_category_vocab_freq[i].items():
+                        if word_id in self.category_words_freq[i].keys() :
+                            # print(word_id, self.category_words_freq[i][word_id],self.old_category_vocab_freq[i][word_id])
+                            self.category_words_freq[i][word_id] += self.old_category_vocab_freq[i][word_id]
+                        else:
+                            self.category_words_freq[i][word_id] = self.old_category_vocab_freq[i][word_id]
+                self.old_category_vocab_freq = self.category_words_freq
+
             self.filter_keywords(category_vocab_size)
-            new_category_vocab = {}
-            for i, category_vocab in self.category_vocab.items():
-                temp_category_vocab = []
-                for j, w in enumerate(category_vocab):
-                    if w in self.non_accepted_words:
-                        continue
-                    else:
-                        temp_category_vocab.append(w)
-                new_category_vocab[i] = np.array(temp_category_vocab)
-            self.category_vocab = new_category_vocab
-            torch.save(self.category_vocab, loader_file)
+
+            #### HUMAN IN THE LOOP PART
+            # new_category_vocab = {}
+            # for i, category_vocab in self.category_vocab.items():
+            #     temp_category_vocab = []
+            #     for j, w in enumerate(category_vocab):
+            #         if w in self.non_accepted_words:
+            #             continue
+            #         else:
+            #             temp_category_vocab.append(w)
+            #     new_category_vocab[i] = np.array(temp_category_vocab)
+            # self.category_vocab = new_category_vocab
+            #### END OF THE HUMAN INVOLVEMENT
+
+
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
-        for i, category_vocab in self.category_vocab.items():
-            print(f"Class {i} category vocabulary: {[self.inv_vocab[w] for w in category_vocab]}\n")
-
-    # Construct negative class
-
-
-    # find label name indices and replace out-of-vocab label names with [MASK]
-    def no_label_name_in_doc(self, doc,top_pred_name = 50, category_vocab_size = 100, loader_name="category_vocab.pt"):
-        loader_file = os.path.join(self.dataset_dir, loader_name)
-        if os.path.exists(loader_file):
-            print(f"Loading category vocabulary from {loader_file}")
-            self.category_vocab = torch.load(loader_file)
-        else:
-            print("Contructing category vocabulary.")
-            self.category_vocabulary(top_pred_num,category_vocab_size)
-
-        self.list_pos_keyword = []
-        for category_vocab in self.category_vocab.items():
-            for w in category_vocab:
-                self.list_pos_keyword.append(w)
-        doc = self.tokenizer.tokenize(doc)
-        label_idx = -1 * torch.ones(self.max_len, dtype=torch.long)
-        new_doc = []
-        wordpcs = []
-        idx = 1 # index starts at 1 due to [CLS] token
-        for i, wordpc in enumerate(doc):
-            wordpcs.append(wordpc[2:] if wordpc.startswith("##") else wordpc)
-            if idx >= self.max_len - 1: # last index will be [SEP] token
-                break
-            if i == len(doc) - 1 or not doc[i+1].startswith("##"):
-                word = ''.join(wordpcs)
-                if word in self.list_pos_keyword:
-                    label_idx[idx] = 0
-                    # replace label names that are not in tokenizer's vocabulary with the [MASK] token
-                    if word not in self.vocab:
-                        wordpcs = [self.tokenizer.mask_token]
-                new_word = ''.join(wordpcs)
-                if new_word != self.tokenizer.unk_token:
-                    idx += len(wordpcs)
-                    new_doc.append(new_word)
-                wordpcs = []
-        for i in random.select(new_doc, 1):
-            new_doc[i] = self.tokenizer.mask_token
-        if (label_idx >= 0).any():
-            return None
-        else:
-            return ' '.join(new_doc), label_idx
-
-
-    def no_label_name_occurrence(self, rank, top_pred_num=50, loader_name="negative_train.pt"):
-
-        text_with_no_label = []
-        no_label_name_idx = []
-        for doc in docs:
-            result = self.no_label_name_in_doc(doc)
-            if result is not None:
-                text_with_label.append(result[0])
-                label_name_idx.append(result[1].unsqueeze(0))
-        if len(text_with_no_label) > 0:
-            encoded_dict = self.tokenizer.batch_encode_plus(text_with_no_label, add_special_tokens=True, max_length=self.max_len, 
-                                                            padding='max_length', return_attention_mask=True, truncation=True, return_tensors='pt')
-            input_ids_with_no_label_name = encoded_dict['input_ids']
-            attention_masks_with_no_label_name = encoded_dict['attention_mask']
-            no_label_name_idx = torch.cat(label_name_idx, dim=0)
-        else:
-            input_ids_with_no_label_name = torch.ones(0, self.max_len, dtype=torch.long)
-            attention_masks_with_no_label_name = torch.ones(0, self.max_len, dtype=torch.long)
-            no_label_name_idx = torch.ones(0, self.max_len, dtype=torch.long)
-        return input_ids_with_no_label_name, attention_masks_with_no_label_name, no_label_name_idx
-
-
-
-    def create_dataset_with_negative(self, dataset_dir, text_file, label_file, loader_name='train.pt', label_name_loader_name='negative_data.pt'):
-        
-        ### Should have been already done, just a double check
-        loader_file = os.path.join(dataset_dir, loader_name)
-        if os.path.exists(loader_file):
-            print(f"Loading encoded texts from {loader_file}")
-            data = torch.load(loader_file)
-        else:
-            print(f"Reading texts from {os.path.join(dataset_dir, text_file)}")
-            corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
-            docs = [doc.strip() for doc in corpus.readlines()]
-            print(f"Converting texts into tensors.")
-            chunk_size = ceil(len(docs) / self.num_cpus)
-            chunks = [docs[x:x+chunk_size] for x in range(0, len(docs), chunk_size)]
-            results = Parallel(n_jobs=self.num_cpus)(delayed(self.encode)(docs=chunk) for chunk in chunks)
-            input_ids = torch.cat([result[0] for result in results])
-            attention_masks = torch.cat([result[1] for result in results])
-            print(f"Saving encoded texts into {loader_file}")
-            if label_file is not None:
-                print(f"Reading labels from {os.path.join(dataset_dir, label_file)}")
-                truth = open(os.path.join(dataset_dir, label_file))
-                labels = [int(label.strip()) for label in truth.readlines()]
-                labels = torch.tensor(labels)
-                data = {"input_ids": input_ids, "attention_masks": attention_masks, "labels": labels}
-            else:
-                data = {"input_ids": input_ids, "attention_masks": attention_masks}
-            torch.save(data, loader_file)
-
-        ### Generate dataset with only negative text
-        print(f"Reading texts from {os.path.join(dataset_dir, text_file)}")
-        corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
-        docs = [doc.strip() for doc in corpus.readlines()]
-        print("Locating label names in the corpus.")
-        chunk_size = ceil(len(docs) / self.num_cpus)
-        chunks = [docs[x:x+chunk_size] for x in range(0, len(docs), chunk_size)]
-        print('Start checking for negative texts')
-        results = Parallel(n_jobs=self.num_cpus)(delayed(self.no_label_name_occurrence)(docs=chunk) for chunk in chunks)
-        input_ids_with_label_name = torch.cat([result[0] for result in results])
-        attention_masks_with_label_name = torch.cat([result[1] for result in results])
-        label_name_idx = torch.cat([result[2] for result in results])
-        assert len(input_ids_with_label_name) > 0, "No label names appear in corpus!"
-        label_name_data = {"input_ids": input_ids_with_label_name, "attention_masks": attention_masks_with_label_name, "labels": label_name_idx}
-        loader_file = os.path.join(dataset_dir, label_name_loader_name)
-        print(f"Saving texts with label names into {loader_file}")
-        torch.save(label_name_data, loader_file)
-        return data, label_name_data
-
-
-    def create_dataloader_with_negative(self,rank, data_dict_labels, data_dict_neg):
-        ### labels
-
-        
-        dataset_labels = TensorDataset(data_dict_labels["input_ids"], data_dict_labels["attention_masks"], data_dict_labels["labels"])
-        dataset_neg = TensorDataset(data_dict_neg["input_ids"], data_dict_neg["attention_masks"],data_dict_neg["labels"])
-
-        sampler = DistributedSampler(dataset, num_replicas=self.world_size, rank=rank)
-        dataset_loader = DataLoader(dataset, sampler=sampler, batch_size=batch_size, shuffle=False)
-        return dataset_loader
+            
+            for i, category_vocab in self.category_vocab.items():
+                self.label_names_used[i].append(self.inv_vocab[category_vocab[0]])
+                print(f"Class {i} category vocabulary: {[self.inv_vocab[w] for w in category_vocab]}\n")
+            if self.loop_over_vocab > self.vocab_loop_counter:
+                new_label_names_file = "temporary_label_names.txt"
+                labels_to_write = []
+                print('Label name already used', self.label_names_used)
+                for i, cat_dict in self.category_words_freq.items():
+                    new_label_names = sorted(cat_dict.items(), key=lambda item: item[1], reverse=True)  
+                    for name, frequency in new_label_names:
+                        if self.inv_vocab[name] not in self.label_names_used[i]:
+                            new_label_name = name
+                            break
+                    print('new label name', self.inv_vocab[new_label_name], frequency)
+                    labels_to_write.append(self.inv_vocab[new_label_name]+'\n')
+                with open(os.path.join(self.dataset_dir, "temporary_label_names.txt"), 'w') as file:
+                    file.writelines(labels_to_write)
+                    del labels_to_write
+                self.read_label_names(self.dataset_dir, new_label_names_file)
+                self.read_data(self.args.dataset_dir, self.args.train_file,self.args.train_label_file, self.args.test_file, self.args.test_label_file, check_exist=False)
+                self.category_vocabulary(check_exist = False)
+            try :
+                os.remove(os.path.join(self.dataset_dir, "temporary_label_names.txt"))
+            except:
+                pass
+                
+            torch.save(self.category_vocab, loader_file)
+            torch.save(self.category_words_freq, os.path.join(self.dataset_dir, loader_freq_name))
 
     # prepare self supervision for masked category prediction (distributed function)
     def prepare_mcp_dist(self, rank, top_pred_num=50, match_threshold=20, loader_name="mcp_train.pt"):

@@ -49,7 +49,11 @@ def main():
                         help='number of gpus to use')
     parser.add_argument('--dist_port', type=int, default=12345,
                         help='distributed training port id; any number between 10000 and 20000 will work')
+    parser.add_argument('--loop_over_vocab', type=int, default=1,
+                        help='Number of loop over the category vocabulary in a automatic fashion to refine it.')
 
+
+    
     args = parser.parse_args()
     print(args)
     trainer = LOTClassTrainer(args)
