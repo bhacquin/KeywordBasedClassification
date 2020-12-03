@@ -22,7 +22,7 @@ SELF_TRAIN_EPOCH=1
 
 for keyword in politics sports business technology
 do
-	for number_of_loop in 1 2 3
+	for number_of_loop in 0 1 2 3
 	do 
 		echo $keyword$number_of_loop
 		mkdir -p datasets/agnews/$keyword$number_of_loop
@@ -42,6 +42,6 @@ do
                     --mcp_epochs ${MCP_EPOCH} --self_train_epochs ${SELF_TRAIN_EPOCH} 
 		mv datasets/agnews/*.pt datasets/agnews/$keyword$number_of_loop
 		echo "Running Model"
-		python3 datasets/agnews/run.py --keyword $keyword --number_of_loop $number_of_loop
+		python3 datasets/agnews/run.py --dataset_dir datasets/${DATASET} --keyword $keyword --number_of_loop $number_of_loop
 	done
 done

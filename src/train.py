@@ -1,4 +1,5 @@
-
+import warnings
+warnings.filterwarnings("ignore")
 from trainer import LOTClassTrainer
 import argparse
 

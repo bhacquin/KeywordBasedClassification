@@ -1,18 +1,11 @@
-    #!/usr/bin/env python
-    # coding: utf-8
-
-    # # I/ CONSTRUCTION OF THE SETS - SECTION
-
-    # ### Category Vocab Construction based on provided Keyword AND Construction of the positive set
-    # 
-    # ##### Need to provide the keywords in the file label_name.txt
-    # ##### All the hyperparameters may be modified in the script agnews.sh
-
-
-
-    ### Creating the folder
+#!/usr/bin/env python
+# coding: utf-8
+## Creating the folder
+import warnings
+warnings.filterwarnings("ignore")
 import os    
 import argparse
+
 
 def main():
     parser = argparse.ArgumentParser(description='main',
@@ -22,9 +15,10 @@ def main():
                         help='keyword')
     parser.add_argument('--number_of_loop', default=1,
                         help='Number of loop to build the category vocabulary')
-
+    parser.add_argument('--dataset_dir', default='agnews', 
+			help='Name of the directory where the datasets are stored.')
     args = parser.parse_args()
-
+    directory = args.dataset_dir
     keyword = args.keyword
     number_of_loop_over_vocab = args.number_of_loop
 
@@ -39,7 +33,9 @@ def main():
     else:
         positive_label = [0]
         print('KEYWORD UNKNOWN')
-    path = os.getcwd()+'/'+keyword+str(number_of_loop_over_vocab)+'/'
+
+    import os ## TO DO : UNDERSTAND WHY NEEDED HERE
+    path = os.getcwd()+'/'+directory+'/'+keyword+str(number_of_loop_over_vocab)+'/'
 
 
     # #### IMPORTS AND GLOBAL PARAMETER
@@ -167,7 +163,7 @@ def main():
     # In[21]:
 
 
-    tokenizer = BertTokenizer.from_pretrained('bert-base-uncased', do_lower_case=True)
+    tokenizer = BertTokenizer.from_pretrained('bert-large-uncased', do_lower_case=True)
     vocab = tokenizer.get_vocab()
     inv_vocab = {k:v for v, k in vocab.items()}
 
@@ -186,8 +182,8 @@ def main():
 
 
     ### TEXT AND LABELS LOADING AND FORMATING
-    corpus = open('train.txt', encoding="utf-8")
-    true_labels = open('train_labels.txt', encoding="utf-8")
+    corpus = open(directory+'/'+'train.txt', encoding="utf-8")
+    true_labels = open(directory+'/'+'train_labels.txt', encoding="utf-8")
     docs_labels = [doc.strip() for doc in true_labels.readlines()]
     dict_label = {0:[], 1:[], 2:[],3:[]}
     list_label = [int(label) for label in docs_labels]
@@ -270,6 +266,7 @@ def main():
             f1_score = 2*(recall*precision)/(recall+precision)
             print("F1_score", f1_score)
         else:
+            f1_score = None
             print("F1_score Undefined")
         print("Accuracy ", accuracy)
         model.train()
@@ -389,7 +386,7 @@ def main():
     # In[30]:
 
 
-    model = LOTClassModel.from_pretrained('bert-base-uncased',
+    model = LOTClassModel.from_pretrained('bert-large-uncased',
                                             output_attentions=False,
                                             output_hidden_states=False,
                                             num_labels=2).to('cuda')
@@ -480,17 +477,6 @@ def main():
     ## TO DO : Words statistics on both sets#
 
 
-    # In[34]:
-
-
-    ### STATISTICS ON CORPUS
-    corpus = open('train.txt', encoding="utf-8")
-    stopwords_vocab = stopwords.words('english')
-    lines = corpus.readlines()
-    words = chain.from_iterable(line.lower().split() for line in lines)
-    count = Counter(word for word in words if word not in stopwords_vocab)
-    count.most_common(55)
-
 
     # #### CONSTRUCTION OF THE DATASETS AND OF THE WEIGHTED SAMPLER
 
@@ -544,7 +530,7 @@ def main():
     # In[38]:
 
 
-    model = LOTClassModel.from_pretrained('bert-base-uncased',
+    model = LOTClassModel.from_pretrained('bert-large-uncased',
                                             output_attentions=False,
                                             output_hidden_states=False,
                                             num_labels=2).to(device)
