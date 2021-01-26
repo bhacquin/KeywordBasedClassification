@@ -1,5 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore")
+import pickle as p
 from collections import defaultdict
 import time
 from joblib import Parallel, delayed
@@ -10,7 +11,8 @@ from torch import nn
 import torch.multiprocessing as mp
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import TensorDataset, DataLoader, SequentialSampler
+from torch.utils.data import TensorDataset, DataLoader, SequentialSampler, WeightedRandomSampler
+from torch.utils.data import Subset
 from torch.utils.data.distributed import DistributedSampler
 from nltk.corpus import stopwords
 from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
@@ -22,9 +24,56 @@ from tqdm import tqdm
 from model import LOTClassModel
 import pandas as pd
 import numpy as np
+from transformers import BertPreTrainedModel, BertModel
+from transformers.modeling_bert import BertOnlyMLMHead    
+import random
+
+## TO DO : IMPLEMENT THE CASE WHEN NO GROUND TRUTH IS AVAILABLE
+
+# #### DEFINITION OF THE MODEL 
+class ClassifModel(BertPreTrainedModel):
+
+    def __init__(self, config):
+        super().__init__(config)
+        self.num_labels = config.num_labels
+        self.bert = BertModel(config, add_pooling_layer=False)
+        self.cls = BertOnlyMLMHead(config)
+        # self.dropout = nn.Dropout(config.hidden_dropout_prob)
+        # self.dense = nn.Linear(config.hidden_size, config.hidden_size)
+        # self.activation = nn.Tanh()
+        # self.classifier = nn.Linear(config.hidden_size, config.num_labels)
+        self.classifier == nn.Sequential(nn.Linear(config.hidden_size, config.hidden_size),
+                                        nn.Tanh(),
+                                        nn.Dropout(config.hidden_dropout_prob),
+                                        nn.Linear(config.hidden_size, config.num_labels))
+        self.init_weights()
+        # MLM head is not trained
+        for param in self.cls.parameters():
+            param.requires_grad = False
+    
+    def forward(self, input_ids, pred_mode, attention_mask=None, token_type_ids=None, 
+                position_ids=None, head_mask=None, inputs_embeds=None):
+        bert_outputs = self.bert(input_ids,
+                                attention_mask=attention_mask,
+                                token_type_ids=token_type_ids,
+                                position_ids=position_ids,
+                                head_mask=head_mask,
+                                inputs_embeds=inputs_embeds)
+        last_hidden_states = bert_outputs[0]
+        if pred_mode == "classification":
+            # trans_states = self.dense(last_hidden_states)
+            # trans_states = self.activation(trans_states)
+            # trans_states = self.dropout(trans_states)
+            # logits = self.classifier(trans_states)
+            logits = self.classifier(last_hidden_states)
+        elif pred_mode == "mlm":
+            logits = self.cls(last_hidden_states)
+        else:
+            sys.exit("Wrong pred_mode!")
+        return logits
 
 
-class LOTClassTrainer(object):
+class ClassifTrainer(object):
 
     def __init__(self, args):
         self.args = args
@@ -50,7 +99,7 @@ class LOTClassTrainer(object):
         self.model = LOTClassModel.from_pretrained(self.pretrained_lm,
                                                    output_attentions=False,
                                                    output_hidden_states=False,
-                                                   num_labels=self.num_class)
+                                                   num_labels=self.num_class+1) ### Class pointing to each keyword and 1 for the rest assumed negative
         self.with_train_label = True if args.train_label_file is not None else False
 
         self.read_data(args.dataset_dir, args.train_file,args.train_label_file, args.test_file, args.test_label_file)
@@ -64,9 +113,34 @@ class LOTClassTrainer(object):
         self.vocab_loop_counter = 0 #[2974, 2374,2998,4368,2449] # TO DO FUNCTION TO RETRIEVE THOSE
         self.loop_over_vocab = args.loop_over_vocab
         self.label_names_used = {}
+        self.true_label = [int(i) for i in str(args.true_label).split(' ')]
+        self.class_predicted_to_label_dic = {}
+        for n, i in enumerate(self.true_label):
+            self.class_predicted_to_label_dic[i] = n
+        print(self.class_predicted_to_label_dic)
+        # self.from_label_to_class_predicted = {}
+        # for n, i in enumerate(self.true_label):
+        #     self.from_label_to_class_predicted[n] = i
+        print('True Label', self.true_label)
+        self.verbose = True
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+
+        #keywords
+        # self.positive_label = [2]
+        self.positive_keywords = [2]
+        self.negative_keywords = []
+        self.number_of_loop_over_vocab = args.loop_over_vocab
         
-        self.ground_truth = args.ground_truth_available
-        
+
+    def add_positive_keyword(self, keyword):
+        self.positive_keywords.append(keyword)
+
+    def add_negative_keyword(self, keyword):
+        self.negative_keywords.append(keyword)
+
+
     # set up distributed training
     def set_up_dist(self, rank):
         dist.init_process_group(
@@ -93,6 +167,13 @@ class LOTClassTrainer(object):
     # convert a list of strings to token ids
     def encode(self, docs):
         encoded_dict = self.tokenizer.batch_encode_plus(docs, add_special_tokens=True, max_length=self.max_len, padding='max_length',
+                                                        return_attention_mask=True, truncation=True, return_tensors='pt')
+        input_ids = encoded_dict['input_ids']
+        attention_masks = encoded_dict['attention_mask']
+        return input_ids, attention_masks
+
+    def non_batch_encode(self, docs):
+        encoded_dict = self.tokenizer.encode_plus(docs, add_special_tokens=True, max_length=self.max_len, padding='max_length',
                                                         return_attention_mask=True, truncation=True, return_tensors='pt')
         input_ids = encoded_dict['input_ids']
         attention_masks = encoded_dict['attention_mask']
@@ -214,9 +295,15 @@ class LOTClassTrainer(object):
     # read label names from file
     def read_label_names(self, dataset_dir, label_name_file):
         label_name_file = open(os.path.join(dataset_dir, label_name_file))
-        label_names = label_name_file.readlines()
+        labels_names_and_class = [label_name.split(';') for label_name in label_name_file.readlines()]
+        label_names = [name[0] for name in labels_names_and_class]
+        positive_or_negative = [name[1] for name in labels_names_and_class]
+        print(positive_or_negative)
         self.label_name_dict = {i: [word.lower() for word in category_words.strip().split()] for i, category_words in enumerate(label_names)}
+        self.label_name_positivity = {i: int((positive.replace('\n','') == 'positive')) for i, positive in enumerate(positive_or_negative)}
+        self.label_name_positivity[len(positive_or_negative)] = 0
         print(f"Label names used for each class are: {self.label_name_dict}")
+        print((f'Label names positivity is: {self.label_name_positivity}'))
         self.label2class = {}
         self.all_label_name_ids = [self.mask_id]
         self.all_label_names = [self.tokenizer.mask_token]
@@ -252,6 +339,7 @@ class LOTClassTrainer(object):
             if len(all_words[word_id]) > 1:
                 repeat_words.append(word_id)
         self.category_vocab = {}
+        print('sorted_dic', sorted_dicts)
         for i, sorted_dict in sorted_dicts.items():
             self.category_vocab[i] = np.array(list(sorted_dict.keys()))
         stopwords_vocab = stopwords.words('english')
@@ -333,7 +421,7 @@ class LOTClassTrainer(object):
                             self.category_words_freq[i][word_id] = self.old_category_vocab_freq[i][word_id]
                 self.old_category_vocab_freq = self.category_words_freq
 
-            self.filter_keywords(category_vocab_size) ### BE CAREFUL THIS FUNCTION SETS, self.category_vocab
+            self.filter_keywords(category_vocab_size)
 
             #### HUMAN IN THE LOOP PART
             # new_category_vocab = {}
@@ -351,10 +439,12 @@ class LOTClassTrainer(object):
 
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
-            
+            print('length', len(self.category_vocab))
             for i, category_vocab in self.category_vocab.items():
+                print('cate_vocab', category_vocab)
                 self.label_names_used[i].append(self.inv_vocab[category_vocab[0]])
                 print(f"Class {i} category vocabulary: {[self.inv_vocab[w] for w in category_vocab]}\n")
+
             if self.loop_over_vocab > self.vocab_loop_counter:
                 new_label_names_file = "temporary_label_names.txt"
                 labels_to_write = []
@@ -382,7 +472,7 @@ class LOTClassTrainer(object):
             torch.save(self.category_words_freq, os.path.join(self.dataset_dir, loader_freq_name))
 
     # prepare self supervision for masked category prediction (distributed function)
-    def prepare_mcp_dist(self, rank, top_pred_num=50, match_threshold=20, loader_name="mcp_train.pt"):
+    def prepare_mcp_dist(self, rank, top_pred_num=50, match_threshold=25, loader_name="mcp_train.pt"):
         model = self.set_up_dist(rank)
         model.eval()
         train_dataset_loader = self.make_dataloader(rank, self.train_data, self.eval_batch_size)
@@ -419,7 +509,7 @@ class LOTClassTrainer(object):
                         valid_doc = torch.sum(valid_idx, dim=-1) > 0
                         if valid_doc.any():
                             mask_label = -1 * torch.ones_like(input_ids)
-                            mask_label[valid_idx] = i
+                            mask_label[valid_idx] = self.true_label[i]
                             all_input_ids.append(input_ids[valid_doc].cpu())
                             all_mask_label.append(mask_label[valid_doc].cpu())
                             all_input_mask.append(input_mask[valid_doc].cpu())
@@ -483,68 +573,594 @@ class LOTClassTrainer(object):
                        "try to add more unlabeled documents to the training corpus (recommend) or reduce `--match_threshold` (not recommend)"
         print(f"There are totally {len(self.mcp_data['input_ids'])} documents with category indicative terms.")
 
-    # masked category prediction (distributed function)
-    def mcp_dist(self, rank, epochs=5, loader_name="mcp_model.pt"):
-        model = self.set_up_dist(rank)
-        mcp_dataset_loader = self.make_dataloader(rank, self.mcp_data, self.train_batch_size)
-        total_steps = len(mcp_dataset_loader) * epochs / self.accum_steps
-        optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5, eps=1e-8)
+
+
+    def training_set_statistics(self, positive_label = None, negative_label = None, loader_name = "mcp_train.pt"):
+        print('Computing statistics Positive set')
+    
+        if positive_label is None:
+            positive_label = self.true_label
+        if negative_label is None :
+            negative_label = self.negative_keywords
+        assert(len(positive_label)>0)
+        loader_file = os.path.join(self.dataset_dir, loader_name)
+        if os.path.exists(loader_file):
+            print(f"Loading masked category prediction data from {loader_file}")
+            self.mcp_data = torch.load(loader_file)
+        else: 
+            self.prepare_mcp()
+            self.mcp_data = torch.load(loader_file)
+        
+        ### Get an assumed label per text
+        assumed_label = []
+        for x in self.mcp_data['labels']:
+            # if all assumed labels are the same accross words of the texts
+            if len(np.unique(x[x!=-1].numpy())) == 1:       
+                assumed_label.append(np.unique(x[x!=-1].numpy())[0])
+            else:
+                assumed_label.append(-1)
+        self.mcp_data['assumed_labels'] = assumed_label
+        assumed_label = np.array(assumed_label)
+        ground = self.mcp_data['ground_truth'].numpy()
+        df = pd.DataFrame([ground, assumed_label]).T
+        df.columns = ['ground','assumed']
+        
+        number_of_true_positive = len(df[(df['ground'].isin(positive_label)) & (df['assumed'].isin(positive_label))])
+        number_of_false_positive = len(df[(~df['ground'].isin(positive_label)) & (df['assumed'].isin(positive_label))])
+
+        if len(negative_label) > 0 : 
+            number_of_true_negative = len(df[(df['ground'].isin(negative_label)) & (df['asssumed'].isin(negative_label))])
+            number_of_false_negative = len(df[(~df['ground'].isin(negative_label)) & (df['asssumed'].isin(negative_label))])
+
+        self.pos_set_accuracy = number_of_true_positive/(number_of_true_positive+number_of_false_positive)
+        self.number_elements_pos_set = number_of_true_positive+number_of_false_positive
+        if self.verbose :
+            print("PRECISION of the positive set : ", number_of_true_positive/(number_of_true_positive+number_of_false_positive))
+            print("NUMBER OF ELEMENTS in the positive set", self.number_elements_pos_set)
+            if len(negative_label) > 0 : 
+                print("Precision of the negative set : ", number_of_true_negative/(number_of_true_negative+number_of_false_negative))
+                print("NUMBER OF ELEMENTS in the negative set", number_of_true_negative+number_of_false_negative)
+
+
+
+        data_vocab = torch.load(os.path.join(self.dataset_dir, "category_vocab.pt"))
+        label_data = torch.load(os.path.join(self.dataset_dir, "label_name_data.pt"))
+        train_data = torch.load(os.path.join(self.dataset_dir, "train.pt"))
+
+        corpus = open(os.path.join(self.dataset_dir,'train.txt'), encoding="utf-8")
+        true_labels = open(os.path.join(self.dataset_dir,'train_labels.txt'), encoding="utf-8")
+        docs_labels = [int(doc.strip()) for doc in true_labels.readlines()]
+        self.docs_labels = docs_labels
+        dict_label = {0:[], 1:[], 2:[],3:[]}
+        # self.list_label = [int(label) for label in docs_labels]
+
+        for i, label in enumerate(docs_labels):
+            dict_label[int(label)].append(i)
+        docs = [doc.strip() for doc in corpus.readlines()]
+
+        category_vocab = []
+        for k in data_vocab.keys():
+            category_vocab += list(data_vocab[k])
+        self.all_keyword_category_vocab = category_vocab ### find a better way if multiple keyword and especially if negative ones
+        self.list_all_keyword = []
+        for w in self.all_keyword_category_vocab:
+            self.list_all_keyword.append(self.inv_vocab[w])
+        self.train_docs = docs
+
+    def loading_for_test(self, loader_name='train.txt', loader_label_name = 'train_labels.txt'):
+        corpus = open(os.path.join(self.dataset_dir,loader_name), encoding="utf-8")
+        docs = [doc.strip() for doc in corpus.readlines()]
+        true_labels = open(os.path.join(self.dataset_dir,loader_label_name), encoding="utf-8")
+        docs_labels = [int(doc.strip()) for doc in true_labels.readlines()]
+        return docs, docs_labels
+
+    def test(self, model,test_data = 'test.txt',test_data_labels = 'test_labels.txt', number = 1024, test_batch_size = 32, all = False, binary = True, true_label = None, device = None):
+        if true_label is None:
+            assert(self.true_label is not None)
+            true_label = self.true_label
+        # if test_data is None:
+        #     docs = self.docs
+        docs, docs_labels = self.loading_for_test(test_data, test_data_labels)
+        if device is None:
+            device = self.device
+        model.eval()
+
+        old_true_positive = 0
+
+        true_negative = 0
+        true_positive = 0
+        false_positive = 0
+        false_negative = 0
+        correct_pred = 0
+        negative = 0
+        divider = number
+        if all:
+            test_list = list(range(len(docs)))
+            divider = len(docs)
+        else:
+            test_list = random.sample(list(range(len(docs))), k = number)
+
+
+            
+        inputs = torch.stack([self.non_batch_encode(docs[i])[0].squeeze() for i in test_list])
+        attention_mask = torch.stack([self.non_batch_encode(docs[i])[1].squeeze() for i in test_list])
+        # true_labels = torch.stack([torch.tensor(int(docs_labels[i] in true_label)) for i in test_list])
+        true_labels = torch.stack([torch.tensor(int(docs_labels[i] in self.true_label)) for i in test_list])
+        
+
+        test_dataset = TensorDataset(inputs, attention_mask, true_labels)
+        test_dataloader = DataLoader(test_dataset, batch_size = test_batch_size)
+        with torch.no_grad():
+            for n, batch in enumerate(test_dataloader):
+                inputs_test, attention_test, labels_test = batch
+                logits = model(inputs_test.to(device),attention_mask=attention_test.to(device), pred_mode='classification')
+                logits_cls = logits[:,0]
+                prediction = torch.argmax(logits_cls, -1)
+                
+                if binary:
+
+                    predictions = torch.tensor([self.label_name_positivity[x.cpu().item()] for x in prediction])
+                    true_positive += (predictions*labels_test).sum().item()
+                    true_negative += ((1-predictions.cpu())*(1-labels_test)).sum().item()
+                    false_positive += ((predictions.cpu())*(1-labels_test)).sum().item()
+                    false_negative += ((1-predictions.cpu())*(labels_test)).sum().item()
+                    correct_pred += (labels_test == predictions.cpu()).sum().item()
+
+
+                    
+                    
+                    # old_true_negative += ((1-prediction.cpu())*(1-labels_test)).sum().item()
+                    # old_false_positive += ((prediction.cpu())*(1-labels_test)).sum().item()
+                    # old_false_negative += ((1-prediction.cpu())*(labels_test)).sum().item()
+                    # old_correct_pred += (labels_test == prediction.cpu()).sum().item()
+
+                else:
+                    true_positive += (prediction.cpu()*labels_test).sum().item()
+                    true_negative += ((1-prediction.cpu())*(1-labels_test)).sum().item()
+                    false_positive += ((prediction.cpu())*(1-labels_test)).sum().item()
+                    false_negative += ((1-prediction.cpu())*(labels_test)).sum().item()
+                    correct_pred += (labels_test == prediction.cpu()).sum().item()
+                assert (correct_pred == (true_positive + true_negative))
+
+            assert(true_positive+true_negative+false_positive+false_negative == divider)
+            accuracy = correct_pred / divider
+            
+        if (true_positive+false_positive) > 0:
+            precision = true_positive / (true_positive+false_positive)
+            print('Precision', precision)
+        else : 
+            precision = None
+            print("Precision Undefined")
+        if (true_positive+false_negative) > 0 :
+            recall = true_positive/(true_positive+false_negative)
+            print('Recall', recall)
+        else :
+            recall = None
+            print("Recall Undefined")
+        if (recall is not None) and (precision is not None) :
+            if recall + precision > 0 :
+                f1_score = 2*(recall*precision)/(recall+precision)
+                print("F1_score", f1_score)
+            else:
+                f1_score = None
+                print("F1_score Undefined")
+        else:
+            f1_score = None
+            print("F1_score Undefined")
+        print("Accuracy ", accuracy)
+        model.train()
+        return accuracy, precision, recall, f1_score
+
+
+
+    def compute_preset_negative(self,docs = None, verbose = None, loader_name = 'pre_negative_dataloader.pt'):
+        print("Computing preset of possible negative texts")
+        loader_file = os.path.join(self.dataset_dir,loader_name)
+        if os.path.exists(loader_file):
+            print(f"Loading pre_negative_dataloader data from {loader_file}")
+            self.pre_negative_dataloader = torch.load(loader_file)
+        else:
+            negative_doc=[]
+            negative_doc_label = []
+            if docs is None:
+                docs = self.train_docs
+            if verbose is None:
+                verbose = self.verbose
+            ### Selecting texts without positive keywords
+            for k, doc in tqdm(enumerate(docs)):
+                tokenized_doc = self.tokenizer.tokenize(doc)
+                new_doc = []
+                wordpcs = []
+                label_idx = -1 * torch.ones(512, dtype=torch.long)
+                for idx, wordpc in enumerate(tokenized_doc):
+                    wordpcs.append(wordpc[2:] if wordpc.startswith("##") else wordpc)
+                    if idx >= 512 - 1: # last index will be [SEP] token
+                        break
+                    if idx == len(doc) - 1 or not doc[idx+1].startswith("##"):
+                        word = ''.join(wordpcs)
+                        if word in self.list_all_keyword:
+                            label_idx[idx] = 0
+                            break
+                        new_word = ''.join(wordpcs)
+                        if new_word != self.tokenizer.unk_token:
+                            idx += len(wordpcs)
+                            new_doc.append(new_word)
+                        wordpcs = []
+                if (label_idx>=0).any():
+                    continue
+                else:
+                    negative_doc_label.append(self.docs_labels[k])
+                    negative_doc.append(doc)
+            if verbose : 
+                print("Negative pre-set", len(negative_doc))
+                print("Precision pre-set, ", len([k for k in negative_doc_label if k not in self.true_label])/len(negative_doc_label))
+            self.pre_negative_docs = negative_doc
+            self.pre_negative_docs_label = negative_doc_label
+
+            ### Formating into tensors
+            inputs_list = []
+            masks_list = []
+            for doc in tqdm(negative_doc):
+                input_ids, input_mask = self.non_batch_encode(doc)
+                inputs_list.append(input_ids)
+                masks_list.append(input_mask)
+            input_tensor = torch.stack(inputs_list).squeeze()
+            mask_tensor = torch.stack(masks_list).squeeze()
+            label_tensor = torch.stack([torch.tensor(i).unsqueeze(0) for i in negative_doc_label])
+            dataset = torch.utils.data.TensorDataset(input_tensor,mask_tensor, label_tensor)
+            dataloader = torch.utils.data.DataLoader(dataset, shuffle = False, batch_size = 8)
+            self.pre_negative_dataset = dataset
+            self.pre_negative_dataloader = dataloader
+
+            ### Export
+            torch.save(self.pre_negative_dataloader,os.path.join(self.dataset_dir,loader_name))
+        
+
+    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 15, min_similar_words = 0,
+                                max_category_word =0, verbose = None, device = None, loader_name = 'pre_negative_dataloader.pt'):
+        print('Compute Negative Training Set')
+        if device is None:
+            device = self.device
+        if model is None: 
+            model = self.model
+        if verbose is None:
+            verbose = self.verbose
+        model.to(device)
+        # loader_file = os.path.join(self.dataset_dir, loader_name)
+        # if os.path.exists(loader_file):
+        #     print(f"Loading pre_negative_dataloader data from {loader_file}")
+        #     self.pre_negative_dataloader = torch.load(loader_file)
+        # else: 
+        self.compute_preset_negative(loader_name=loader_name)
+            # self.pre_negative_dataloader = torch.load(loader_file)
+        if os.path.exists(os.path.join(self.dataset_dir,'negative_dataset.pt')):
+            self.negative_dataset = torch.load(os.path.join(self.dataset_dir,'negative_dataset.pt'))
+        else:
+            # Parameters controlling the size of the neg set
+            relative_factor_pos_neg = relative_factor_pos_neg
+            early_stopping = True
+
+            verified_negative = []
+            ground_label = []
+            correct_label = 0
+            verbose = True
+            topk = 15
+            # vocab = torch.tensor(self.pos_category_vocab).to(device)
+            min_similar_words = 0
+            max_category_word = 0
+
+            # Computations
+            with torch.no_grad():
+                for k, batch in tqdm(enumerate(self.pre_negative_dataloader)):
+
+                    input_ids, input_mask, label_id = batch
+                    predictions = model(input_ids.to(device),
+                                    pred_mode="mlm",
+                                    token_type_ids=None, 
+                                    attention_mask=input_mask.to(device))
+                    # Loop over the documents in the batch
+                    for i, doc in enumerate(predictions.cpu()):
+                        # Selecting only the position corresponding to a word not the PADDING
+                        masked_pred = doc[:input_mask[i].sum().item(),:]
+                        # Selecting the TOP 'k' words predicted at each position
+                        _ , words = torch.topk(masked_pred, topk, -1)
+                        counter = 0
+                        # Loop over the words in each document
+                        for word in words.squeeze():
+                            counter += int(len(np.intersect1d(word.cpu().numpy(), self.pos_category_vocab))>min_similar_words)
+                            if counter > max_category_word:
+                                break
+                        if counter <= max_category_word:             
+                            verified_negative.append(k*4+i)
+                            ground_label.append(label_id[i])
+                            if label_id[i] not in self.true_label:
+                                correct_label += 1 
+                    if (len(verified_negative) > relative_factor_pos_neg * self.number_elements_pos_set) and early_stopping:
+                        break
+                    if len(verified_negative) > 0:
+                        neg_set_accuracy = correct_label/len(verified_negative)
+                    else:
+                        neg_set_accuracy = 0
+                    
+                    if k%100 == 0 and verbose:
+                        if len(verified_negative)>0:
+                            print('accuracy :', neg_set_accuracy)
+                            print('number of elements retrieved', len(verified_negative))
+                
+
+            #EXPORT THE DATASET 
+            self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
+            torch.save(self.negative_dataset, os.path.join(self.dataset_dir,'negative_dataset.pt'))
+       
+
+
+    def train(self, model = None, batch_size = None, accum_steps = 8, epochs = 3, loader_positive = 'mcp_train.pt', 
+                loader_negative = 'negative_dataset.pt',weighted_sampler = True,  device = None):
+        print('Training ...')
+
+        if model is None:
+            model = self.model
+        if device is None:
+            device = self.device
+        if batch_size is None:
+            batch_size = self.train_batch_size
+
+        positive_loader_file = os.path.join(self.dataset_dir, loader_positive)
+        if os.path.exists(positive_loader_file):
+            print(f"Loading masked category prediction data from {positive_loader_file}")
+            mcp_data = torch.load(positive_loader_file)
+        else: 
+            self.prepare_mcp()
+            mcp_data = torch.load(positive_loader_file)
+        
+
+        assumed_label = []
+        for x in self.mcp_data['labels']:
+        # if all assumed labels are the same accross words of the texts
+            if len(np.unique(x[x!=-1].numpy())) == 1:       
+                assumed_label.append(np.unique(x[x!=-1].numpy())[0])
+            else:
+                assumed_label.append(-1)
+                
+        self.mcp_data['assumed_labels'] = assumed_label
+        ### GET RID OF THE TEXT WHERE MULTIPLE LABELS WHERE FOUND ; Possible improvements
+        index_select = [i  for i, x in enumerate(assumed_label) if x!=-1]
+        
+
+        inputs = mcp_data['input_ids'].tolist()
+        inputs_ids = torch.stack([torch.tensor(inputs[i]) for i in index_select])
+
+        attention = mcp_data['attention_masks'].tolist()
+        attention_masks = torch.stack([torch.tensor(attention[i]) for i in index_select])
+
+        all_labels = self.mcp_data['assumed_labels']
+        
+        labels_for_training = torch.stack([torch.tensor(self.class_predicted_to_label_dic[all_labels[i]]) for i in index_select])
+        
+        self.positive_dataset = torch.utils.data.TensorDataset(inputs_ids, attention_masks, labels_for_training)
+        # self.positive_dataset = torch.utils.data.TensorDataset(mcp_data['input_ids'], mcp_data['attention_masks'], mcp_data['assumed_labels'])
+
+        ### Negative
+        # negative_loader_file = os.path.join(self.dataset_dir, loader_negative)
+        self.compute_set_negative()
+        # if os.path.exists(negative_loader_file):
+        #     negative_dataset = torch.load(negative_loader_file)
+        # else:
+        #     self.compute_set_negative()
+        #     negative_dataset = torch.load(negative_loader_file)  
+        
+        ### CONSTRUCTION OF THE DATALOADER
+        data = torch.stack([negative_data[0][:200] for negative_data in self.negative_dataset] + 
+                    [positive_data[0][:200] for positive_data in self.positive_dataset])
+        ### New negative class always the last class
+        mask = torch.stack([negative_data[1][:200] for negative_data in self.negative_dataset] + 
+                    [positive_data[1][:200] for positive_data in self.positive_dataset])
+
+        # target1 = np.hstack((np.zeros(int(len(self.negative_dataset)), dtype=np.int32),
+        #         np.ones(int(len(self.positive_dataset)), dtype=np.int32)))
+
+        target = np.hstack(((np.zeros(int(len(self.negative_dataset)), dtype=np.int32)+len(self.label_name_positivity)-1),
+                np.array([keyword_data[2] for keyword_data in self.positive_dataset])))
+
+
+        target = torch.from_numpy(np.expand_dims(target, 1)).long()
+
+        train_dataset = torch.utils.data.TensorDataset(data,mask, target)
+        ### Construction of the weighted sampler based on sets' sizes and of the target vector #########
+
+        if weighted_sampler:
+
+            class_sample_count = np.array([len(np.where(target == t)[0]) for t in np.unique(target)])
+            weight = 1. / class_sample_count
+            samples_weight = np.array([weight[t] for t in target])
+            samples_weight = torch.from_numpy(samples_weight)
+            samples_weigth = samples_weight.double()
+            sampler = WeightedRandomSampler(samples_weight, len(samples_weight))
+            train_loader = DataLoader(train_dataset, batch_size = batch_size, sampler=sampler)
+
+        else:
+
+            train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True)
+
+
+        ### TRAINING HYPERPARAMETERS AND PARAMETERS
+
+        accum_steps = accum_steps
+        epochs = epochs
+        learning_rate = 5e-5
+        train_loss = nn.CrossEntropyLoss()
+        total_steps = len(train_loader) * epochs / accum_steps
+        number_of_mask = 2
+        assert((accum_steps*batch_size)>=128)
+        print(type(mcp_data['labels']))
+        pos_set_accuracy = np.sum(mcp_data['labels'].numpy())/len(mcp_data['labels'])
+        neg_set_accuracy = 0 # TO DO
+
+
+        parameters = {'epochs':epochs, 'learning_rate':learning_rate, 'number_of_mask':number_of_mask,
+            'accum_steps':accum_steps, 
+            'batch_size': batch_size, 
+            'pos_set' : len(self.positive_dataset),
+            'pos_set_accuracy' : pos_set_accuracy,
+            'neg_set' : len(self.negative_dataset),
+            'neg_set_accuracy' :neg_set_accuracy,
+            'loop_over_vocab' : self.number_of_loop_over_vocab,
+            'positive_keywords' : self.positive_keywords,
+            'negative_keywords' : self.negative_keywords}
+
+        optimizer = AdamW([{'params' : filter(lambda p: p.requires_grad, model.bert.parameters()), 'lr' : 1e-2*learning_rate}, 
+                            {'params' : filter(lambda p: p.requires_grad, model.classifier.parameters()), 'lr' : learning_rate}], eps=1e-8)
+        # optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, eps=1e-8)
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0.1*total_steps, num_training_steps=total_steps)
+
+
+        number_of_mask = 1 
+        # Metrics
+        losses_track = []
+        accuracies = []
+        precisions = []
+        recalls = []
+        f1_scores = []
+        global_steps = []
+
         try:
             for i in range(epochs):
-                model.train()
+                self.model.train()
                 total_train_loss = 0
-                if rank == 0:
-                    print(f"Epoch {i+1}:")
-                wrap_mcp_dataset_loader = tqdm(mcp_dataset_loader) if rank == 0 else mcp_dataset_loader
-                model.zero_grad()
-                for j, batch in enumerate(wrap_mcp_dataset_loader):
-                    input_ids = batch[0].to(rank)
-                    input_mask = batch[1].to(rank)
-                    labels = batch[2].to(rank)
-                    mask_pos = labels >= 0
-                    labels = labels[mask_pos]
-                    # mask out category indicative words
-                    input_ids[mask_pos] = self.mask_id
-                    logits = model(input_ids, 
-                                   pred_mode="classification",
-                                   token_type_ids=None, 
-                                   attention_mask=input_mask)
-                    logits = logits[mask_pos]
-                    loss = self.mcp_loss(logits.view(-1, self.num_class), labels.view(-1)) / self.accum_steps
+                self.model.zero_grad()
+                print('Epoch : ', i)
+                for j, batch in enumerate(train_loader):
+                    input_ids = batch[0].to(device)
+                    input_mask = batch[1].to(device)
+                    labels = batch[2].to(device)
+
+
+                    ### RANDOM MASKING
+                    random_masking = random.choices(list(range(199)),k = number_of_mask * input_ids.size(0))
+                    for i, mask_pos in enumerate(random_masking):
+                        input_ids[i%input_ids.size(0),mask_pos+1] = self.tokenizer.get_vocab()[self.tokenizer.mask_token]
+                    
+                    ### PREDICTION
+                    logits = self.model(input_ids, 
+                                pred_mode="classification",
+                                token_type_ids=None, 
+                                attention_mask=input_mask)
+                    ### LOSS
+                    logits_cls = logits[:,0]
+                    # print(logits_cls.size())
+                    # print(labels.size())
+                    loss = train_loss(logits_cls.view(-1, 2), labels.view(-1)) / accum_steps            
                     total_train_loss += loss.item()
                     loss.backward()
-                    if (j+1) % self.accum_steps == 0:
+                    if (j+1) % accum_steps == 0:
                         # Clip the norm of the gradients to 1.0.
+                        
+                        losses_track.append(loss*accum_steps)
                         nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                         optimizer.step()
                         scheduler.step()
-                        model.zero_grad()
-                avg_train_loss = torch.tensor([total_train_loss / len(mcp_dataset_loader) * self.accum_steps]).to(rank)
-                gather_list = [torch.ones_like(avg_train_loss) for _ in range(self.world_size)]
-                dist.all_gather(gather_list, avg_train_loss)
-                avg_train_loss = torch.tensor(gather_list)
-                if rank == 0:
-                    print(f"Average training loss: {avg_train_loss.mean().item()}")
-            if rank == 0:
-                loader_file = os.path.join(self.dataset_dir, loader_name)
-                torch.save(model.module.state_dict(), loader_file)
-        except RuntimeError as err:
-            self.cuda_mem_error(err, "train", rank)
+                        self.model.zero_grad()
+                        
+                    if j % (3*accum_steps) == 0 :
+                        print('loss',loss*accum_steps)
+                        accuracy, precision, recall, f1_score = self.test(model, number = 1024)
+                        accuracies.append(accuracy)
+                        precisions.append(precision)
+                        recalls.append(recall)
+                        f1_scores.append(f1_score)
+                        global_steps.append(j)
+                avg_train_loss = torch.tensor([total_train_loss / len(train_loader) * accum_steps]).to(device)
+                print(f"Average training loss: {avg_train_loss.mean().item()}")
 
-    # masked category prediction
-    def mcp(self, top_pred_num=50, match_threshold=20, epochs=5, loader_name="mcp_model.pt"):
-        loader_file = os.path.join(self.dataset_dir, loader_name)
-        if os.path.exists(loader_file):
-            print(f"\nLoading model trained via masked category prediction from {loader_file}")
-        else:
-            self.prepare_mcp(top_pred_num, match_threshold)
-            print(f"\nTraining model via masked category prediction.")
-            mp.spawn(self.mcp_dist, nprocs=self.world_size, args=(epochs, loader_name))
-        self.model.load_state_dict(torch.load(loader_file))
+        except RuntimeError as err:
+            print(err)
+
+        ### Export
+        p.dump(accuracies,open(os.path.join(self.dataset_dir,'accuracy.p'),'wb'))
+        p.dump(losses_track,open(os.path.join(self.dataset_dir,'loss.p'),'wb'))
+        p.dump(precisions,open(os.path.join(self.dataset_dir,'precision.p'),'wb'))
+        p.dump(recalls,open(os.path.join(self.dataset_dir,'recall.p'),'wb'))
+        p.dump(f1_scores,open(os.path.join(self.dataset_dir,'f1_score.p'),'wb'))
+        p.dump(parameters, open(os.path.join(self.dataset_dir,'parameters.p'), 'wb'))
+        torch.save(self.model.state_dict(), os.path.join(self.dataset_dir,'model.pt'))
+
+
+
+
+                  
+
+
+
+        
+        
+
+
+
+
+    # # masked category prediction (distributed function)
+    # def mcp_dist(self, rank, epochs=5, loader_name="mcp_model.pt"):
+    #     model = self.set_up_dist(rank)
+    #     mcp_dataset_loader = self.make_dataloader(rank, self.mcp_data, self.train_batch_size)
+    #     total_steps = len(mcp_dataset_loader) * epochs / self.accum_steps
+    #     optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5, eps=1e-8)
+    #     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0.1*total_steps, num_training_steps=total_steps)
+    #     try:
+    #         for i in range(epochs):
+    #             model.train()
+    #             total_train_loss = 0
+    #             if rank == 0:
+    #                 print(f"Epoch {i+1}:")
+    #             wrap_mcp_dataset_loader = tqdm(mcp_dataset_loader) if rank == 0 else mcp_dataset_loader
+    #             model.zero_grad()
+    #             for j, batch in enumerate(wrap_mcp_dataset_loader):
+    #                 input_ids = batch[0].to(rank)
+    #                 input_mask = batch[1].to(rank)
+    #                 labels = batch[2].to(rank)
+    #                 mask_pos = labels >= 0
+    #                 labels = labels[mask_pos]
+    #                 # mask out category indicative words
+    #                 input_ids[mask_pos] = self.mask_id
+    #                 logits = model(input_ids, 
+    #                                pred_mode="classification",
+    #                                token_type_ids=None, 
+    #                                attention_mask=input_mask)
+    #                 logits = logits[mask_pos]
+    #                 loss = self.mcp_loss(logits.view(-1, self.num_class), labels.view(-1)) / self.accum_steps
+    #                 total_train_loss += loss.item()
+    #                 loss.backward()
+    #                 if (j+1) % self.accum_steps == 0:
+    #                     # Clip the norm of the gradients to 1.0.
+    #                     nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+    #                     optimizer.step()
+    #                     scheduler.step()
+    #                     model.zero_grad()
+    #             avg_train_loss = torch.tensor([total_train_loss / len(mcp_dataset_loader) * self.accum_steps]).to(rank)
+    #             gather_list = [torch.ones_like(avg_train_loss) for _ in range(self.world_size)]
+    #             dist.all_gather(gather_list, avg_train_loss)
+    #             avg_train_loss = torch.tensor(gather_list)
+    #             if rank == 0:
+    #                 print(f"Average training loss: {avg_train_loss.mean().item()}")
+    #         if rank == 0:
+    #             loader_file = os.path.join(self.dataset_dir, loader_name)
+    #             torch.save(model.module.state_dict(), loader_file)
+    #     except RuntimeError as err:
+    #         self.cuda_mem_error(err, "train", rank)
+
+    # # masked category prediction
+    # def mcp(self, top_pred_num=50, match_threshold=20, epochs=5, loader_name="mcp_model.pt"):
+    #     loader_file = os.path.join(self.dataset_dir, loader_name)
+    #     if os.path.exists(loader_file):
+    #         print(f"\nLoading model trained via masked category prediction from {loader_file}")
+    #     else:
+    #         self.prepare_mcp(top_pred_num, match_threshold)
+    #         print(f"\nTraining model via masked category prediction.")
+    #         mp.spawn(self.mcp_dist, nprocs=self.world_size, args=(epochs, loader_name))
+    #     self.model.load_state_dict(torch.load(loader_file))
 
     # prepare self training data and target distribution
     def prepare_self_train_data(self, rank, model, idx):
+
+        ### TO DO ADD UNCERTAINTY WITH DROPOUT
         target_num = min(self.world_size * self.train_batch_size * self.update_interval * self.accum_steps, len(self.train_data["input_ids"]))
         if idx + target_num >= len(self.train_data["input_ids"]):
             select_idx = torch.cat((torch.arange(idx, len(self.train_data["input_ids"])),
@@ -575,6 +1191,16 @@ class LOTClassTrainer(object):
 
     # train a model on batches of data with target labels
     def self_train_batches(self, rank, model, self_train_loader, optimizer, scheduler, test_dataset_loader):
+
+
+               # Metrics
+        losses_track = []
+        accuracies = []
+        precisions = []
+        recalls = []
+        f1_scores = []
+        global_steps = []
+
         model.train()
         total_train_loss = 0
         wrap_train_dataset_loader = tqdm(self_train_loader) if rank == 0 else self_train_loader
@@ -599,11 +1225,15 @@ class LOTClassTrainer(object):
                     optimizer.step()
                     scheduler.step()
                     model.zero_grad()
-            if self.with_test_label:
-                acc = self.inference(model, test_dataset_loader, rank, return_type="acc")
-                gather_acc = [torch.ones_like(acc) for _ in range(self.world_size)]
-                dist.all_gather(gather_acc, acc)
-                acc = torch.tensor(gather_acc).mean().item()
+            # if self.with_test_label:
+            #     acc = self.inference(model, test_dataset_loader, rank, return_type="acc")
+            #     gather_acc = [torch.ones_like(acc) for _ in range(self.world_size)]
+            #     dist.all_gather(gather_acc, acc)
+            #     acc = torch.tensor(gather_acc).mean().item()
+
+
+
+
             avg_train_loss = torch.tensor([total_train_loss / len(wrap_train_dataset_loader) * self.accum_steps]).to(rank)
             gather_list = [torch.ones_like(avg_train_loss) for _ in range(self.world_size)]
             dist.all_gather(gather_list, avg_train_loss)
@@ -611,8 +1241,16 @@ class LOTClassTrainer(object):
             if rank == 0:
                 print(f"lr: {optimizer.param_groups[0]['lr']:.4g}")
                 print(f"Average training loss: {avg_train_loss.mean().item()}")
-                if self.with_test_label:
-                    print(f"Test acc: {acc}")
+                ### TEST SCORE
+                accuracy, precision, recall, f1_score = self.test(model, number = 1024)
+                losses_track.append(loss*self.accum_steps)
+                accuracies.append(accuracy)
+                precisions.append(precision)
+                recalls.append(recall)
+                f1_scores.append(f1_score)
+                global_steps.append(j)
+                # if self.with_test_label:
+                #     print(f"Test acc: {acc}")
         except RuntimeError as err:
             self.cuda_mem_error(err, "train", rank)
 
@@ -650,9 +1288,16 @@ class LOTClassTrainer(object):
             print(f"\nFinal model {loader_file} found, skip self-training")
         else:
             rand_idx = torch.randperm(len(self.train_data["input_ids"]))
-            self.train_data = {"input_ids": self.train_data["input_ids"][rand_idx],
-                               "attention_masks": self.train_data["attention_masks"][rand_idx]}
+            if len(self.train_data) > 2:
+                self.train_data = {"input_ids": self.train_data["input_ids"][rand_idx],
+                                "attention_masks": self.train_data["attention_masks"][rand_idx],
+                                "labels" : self.train_data["labels"][rand_idx]}
+            else:
+                print('No groud truth label in dataset')
+                self.train_data = {"input_ids": self.train_data["input_ids"][rand_idx],
+                                "attention_masks": self.train_data["attention_masks"][rand_idx]}
             print(f"\nStart self-training.")
+            print('world_size', self.world_size)
             mp.spawn(self.self_train_dist, nprocs=self.world_size, args=(epochs, loader_name))
     
     # use a model to do inference on a dataloader
