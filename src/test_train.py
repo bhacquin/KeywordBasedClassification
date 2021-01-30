@@ -10,7 +10,7 @@ def main():
     
     parser.add_argument('--dataset_dir', default='datasets/agnews/',
                         help='dataset directory')
-    parser.add_argument('--label_names_file', default='label_names_1.txt',
+    parser.add_argument('--label_names_file', default='label_names_2.txt',
                         help='file containing label names (under dataset directory)')
     parser.add_argument('--train_file', default='train.txt',
                         help='unlabeled text corpus for training (under dataset directory); one document per line')
@@ -52,7 +52,7 @@ def main():
                         help='distributed training port id; any number between 10000 and 20000 will work')
     parser.add_argument('--loop_over_vocab', type=int, default=2,
                         help='Number of loop over the category vocabulary in a automatic fashion to refine it.')
-    parser.add_argument("--true_label", type = str, default = "2", 
+    parser.add_argument("--true_label", type = str, default = "2 3", 
                     help=" name of the ground truth labels of interest, must be number of labels separated by a space")
     
 
@@ -61,19 +61,23 @@ def main():
     args = parser.parse_args()
     print('args',args)
     trainer = ClassifTrainer(args)
+
     # Construct category vocabulary
     trainer.category_vocabulary(top_pred_num=args.top_pred_num, category_vocab_size=args.category_vocab_size)
+
     # Construct positive class
     trainer.prepare_mcp(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
 
     ##test
     trainer.add_positive_keyword('business')
+    trainer.add_positive_keyword('technology')
     trainer.training_set_statistics()
     trainer.compute_preset_negative()
     trainer.compute_set_negative()
-    trainer.train()
+    
     # Training with masked category prediction
-    # trainer.mcp(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, epochs=args.mcp_epochs)
+    trainer.train()
+
     # Self-training 
     trainer.prepare_mcp(args.top_pred_num, args.match_threshold)
     trainer.self_train(epochs=args.self_train_epochs, loader_name=args.final_model)

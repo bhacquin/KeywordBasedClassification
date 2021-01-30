@@ -15,7 +15,7 @@ from torch.utils.data import TensorDataset, DataLoader, SequentialSampler, Weigh
 from torch.utils.data import Subset
 from torch.utils.data.distributed import DistributedSampler
 from nltk.corpus import stopwords
-from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
+
 import numpy as np
 import os
 import shutil
@@ -24,13 +24,16 @@ from tqdm import tqdm
 from model import LOTClassModel
 import pandas as pd
 import numpy as np
+from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
 from transformers import BertPreTrainedModel, BertModel
 from transformers.modeling_bert import BertOnlyMLMHead    
 import random
 
 ## TO DO : IMPLEMENT THE CASE WHEN NO GROUND TRUTH IS AVAILABLE
+## TO DO : MULTI GPU
+## TO DO : MASK KEYWORD
 
-# #### DEFINITION OF THE MODEL 
+## DEFINITION OF THE MODEL 
 class ClassifModel(BertPreTrainedModel):
 
     def __init__(self, config):
@@ -38,11 +41,7 @@ class ClassifModel(BertPreTrainedModel):
         self.num_labels = config.num_labels
         self.bert = BertModel(config, add_pooling_layer=False)
         self.cls = BertOnlyMLMHead(config)
-        # self.dropout = nn.Dropout(config.hidden_dropout_prob)
-        # self.dense = nn.Linear(config.hidden_size, config.hidden_size)
-        # self.activation = nn.Tanh()
-        # self.classifier = nn.Linear(config.hidden_size, config.num_labels)
-        self.classifier == nn.Sequential(nn.Linear(config.hidden_size, config.hidden_size),
+        self.classifier = nn.Sequential(nn.Linear(config.hidden_size, config.hidden_size),
                                         nn.Tanh(),
                                         nn.Dropout(config.hidden_dropout_prob),
                                         nn.Linear(config.hidden_size, config.num_labels))
@@ -61,10 +60,6 @@ class ClassifModel(BertPreTrainedModel):
                                 inputs_embeds=inputs_embeds)
         last_hidden_states = bert_outputs[0]
         if pred_mode == "classification":
-            # trans_states = self.dense(last_hidden_states)
-            # trans_states = self.activation(trans_states)
-            # trans_states = self.dropout(trans_states)
-            # logits = self.classifier(trans_states)
             logits = self.classifier(last_hidden_states)
         elif pred_mode == "mlm":
             logits = self.cls(last_hidden_states)
@@ -95,43 +90,47 @@ class ClassifTrainer(object):
         self.mask_id = self.vocab[self.tokenizer.mask_token]
         self.inv_vocab = {k:v for v, k in self.vocab.items()}
         self.read_label_names(args.dataset_dir, args.label_names_file)
-        self.num_class = len(self.label_name_dict)
-        self.model = LOTClassModel.from_pretrained(self.pretrained_lm,
+        self.num_class = len(self.label_name_dict) + 1 ### Class pointing to each keyword and 1 for the rest assumed negative
+        self.num_keywords = len(self.label_name_dict)
+        self.minimum_occurences_per_class = 2500
+        self.occurences_per_class = self.count_occurences(args.dataset_dir, args.train_file)
+        self.model = ClassifModel.from_pretrained(self.pretrained_lm,
                                                    output_attentions=False,
                                                    output_hidden_states=False,
-                                                   num_labels=self.num_class+1) ### Class pointing to each keyword and 1 for the rest assumed negative
+                                                   num_labels=self.num_class) 
         self.with_train_label = True if args.train_label_file is not None else False
 
         self.read_data(args.dataset_dir, args.train_file,args.train_label_file, args.test_file, args.test_label_file)
-        self.with_test_label = True if args.test_label_file is not None else False
+        self.with_test_label = True if args.test_label_file is not None else False ### bizarre
         self.temp_dir = f'tmp_{self.dist_port}'
         self.mcp_loss = nn.CrossEntropyLoss()
         self.st_loss = nn.KLDivLoss(reduction='batchmean')
         self.update_interval = args.update_interval
-        self.early_stop = args.early_stop
+        self.early_stop = args.early_stop   ### TO DO : check minimum size
         self.non_accepted_words = []
-        self.vocab_loop_counter = 0 #[2974, 2374,2998,4368,2449] # TO DO FUNCTION TO RETRIEVE THOSE
-        self.loop_over_vocab = args.loop_over_vocab
+        self.vocab_loop_counter = 0 ### TO DO : move to the right method
+        
+        
+        self.loop_over_vocab = args.loop_over_vocab  ### TO DO : Separate per keyword and make it automatic
+        
+        
         self.label_names_used = {}
+
         self.true_label = [int(i) for i in str(args.true_label).split(' ')]
         self.class_predicted_to_label_dic = {}
         for n, i in enumerate(self.true_label):
-            self.class_predicted_to_label_dic[i] = n
+            self.class_predicted_to_label_dic[i] = n  ### Track all labels if known
         print(self.class_predicted_to_label_dic)
-        # self.from_label_to_class_predicted = {}
-        # for n, i in enumerate(self.true_label):
-        #     self.from_label_to_class_predicted[n] = i
         print('True Label', self.true_label)
+        print('occurences', self.occurences_per_class)
         self.verbose = True
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-
-        #keywords
-        # self.positive_label = [2]
+        #keywords ### TO DO CHECK IF NECESSARY? REPLACE BY self.true_label
         self.positive_keywords = [2]
         self.negative_keywords = []
-        self.number_of_loop_over_vocab = args.loop_over_vocab
+        
         
 
     def add_positive_keyword(self, keyword):
@@ -163,6 +162,23 @@ class ClassifTrainer(object):
         print(f"Document max length: {np.max(doc_len)}, avg length: {np.mean(doc_len)}, std length: {np.std(doc_len)}")
         trunc_frac = np.sum(np.array(doc_len) > self.max_len) / len(doc_len)
         print(f"Truncated fraction of all documents: {trunc_frac}")
+
+    # Count occurences of keywords in corpus
+    def count_occurences(self,dataset_dir, text_file, dict_of_keywords = None):
+        
+        if dict_of_keywords is None:
+            assert(self.label_name_dict is not None)
+            dict_of_keywords = self.label_name_dict
+        corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
+        docs = [doc.strip() for doc in corpus.readlines()]
+        occurences_per_class = {i:0 for i in dict_of_keywords}
+        for doc in docs:
+            for i in dict_of_keywords:
+                for keyword in self.label_name_dict[i]:
+                    occurences_per_class[i] += int(keyword.lower() in doc.lower()[:self.max_len])
+        print(occurences_per_class)
+        return occurences_per_class
+
 
     # convert a list of strings to token ids
     def encode(self, docs):
@@ -220,6 +236,7 @@ class ClassifTrainer(object):
                 print(f"Reading texts from {os.path.join(dataset_dir, text_file)}")
                 corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
                 docs = [doc.strip() for doc in corpus.readlines()]
+
                 print("Locating label names in the corpus.")
                 chunk_size = ceil(len(docs) / self.num_cpus)
                 chunks = [docs[x:x+chunk_size] for x in range(0, len(docs), chunk_size)]
@@ -250,7 +267,8 @@ class ClassifTrainer(object):
             if i == len(doc) - 1 or not doc[i+1].startswith("##"):
                 word = ''.join(wordpcs)
                 if word in self.label2class:
-                    label_idx[idx] = self.label2class[word]
+                    label_idx[idx] = self.label2class[word]                    
+                    
                     # replace label names that are not in tokenizer's vocabulary with the [MASK] token
                     if word not in self.vocab:
                         wordpcs = [self.tokenizer.mask_token]
@@ -272,7 +290,7 @@ class ClassifTrainer(object):
             result = self.label_name_in_doc(doc)
             if result is not None:
                 text_with_label.append(result[0])
-                label_name_idx.append(result[1].unsqueeze(0))
+                label_name_idx.append(result[1].unsqueeze(0))                    
         if len(text_with_label) > 0:
             encoded_dict = self.tokenizer.batch_encode_plus(text_with_label, add_special_tokens=True, max_length=self.max_len, 
                                                             padding='max_length', return_attention_mask=True, truncation=True, return_tensors='pt')
@@ -293,15 +311,17 @@ class ClassifTrainer(object):
             self.test_data = self.create_dataset(dataset_dir, test_file, test_label_file, "test.pt", check_exist = check_exist)
 
     # read label names from file
-    def read_label_names(self, dataset_dir, label_name_file):
+    def read_label_names(self, dataset_dir, label_name_file, change_positivity_var = True):
         label_name_file = open(os.path.join(dataset_dir, label_name_file))
         labels_names_and_class = [label_name.split(';') for label_name in label_name_file.readlines()]
         label_names = [name[0] for name in labels_names_and_class]
         positive_or_negative = [name[1] for name in labels_names_and_class]
         print(positive_or_negative)
-        self.label_name_dict = {i: [word.lower() for word in category_words.strip().split()] for i, category_words in enumerate(label_names)}
-        self.label_name_positivity = {i: int((positive.replace('\n','') == 'positive')) for i, positive in enumerate(positive_or_negative)}
-        self.label_name_positivity[len(positive_or_negative)] = 0
+        self.label_name_dict = {i: [word.lower() for word in category_words.strip().split(',')] for i, category_words in enumerate(label_names)}
+        label_name_positivity = {i: int((positive.replace('\n','') == 'positive')) for i, positive in enumerate(positive_or_negative)}
+        label_name_positivity[len(positive_or_negative)] = 0
+        if change_positivity_var:
+            self.label_name_positivity = label_name_positivity
         print(f"Label names used for each class are: {self.label_name_dict}")
         print((f'Label names positivity is: {self.label_name_positivity}'))
         self.label2class = {}
@@ -339,9 +359,10 @@ class ClassifTrainer(object):
             if len(all_words[word_id]) > 1:
                 repeat_words.append(word_id)
         self.category_vocab = {}
-        print('sorted_dic', sorted_dicts)
+        # print('sorted_dic', sorted_dicts)
         for i, sorted_dict in sorted_dicts.items():
-            self.category_vocab[i] = np.array(list(sorted_dict.keys()))
+            if len(list(sorted_dict.keys()))>0: ### non empty list
+                self.category_vocab[i] = np.array(list(sorted_dict.keys()))
         stopwords_vocab = stopwords.words('english')
         for i, word_list in self.category_vocab.items():
             delete_idx = []
@@ -354,11 +375,11 @@ class ClassifTrainer(object):
             self.category_vocab[i] = np.delete(self.category_vocab[i], delete_idx)
 
     # construct category vocabulary (distributed function)
-    def category_vocabulary_dist(self, rank, top_pred_num=50, loader_name="category_vocab.pt"):
+    def category_vocabulary_dist(self, rank, num_keywords , top_pred_num=50, loader_name="category_vocab.pt"):
         model = self.set_up_dist(rank)
         model.eval()
         label_name_dataset_loader = self.make_dataloader(rank, self.label_name_data, self.eval_batch_size)
-        category_words_freq = {i: defaultdict(float) for i in range(self.num_class)}
+        category_words_freq = {i: defaultdict(float) for i in range(num_keywords)} ### the -1 comes from the addition of extra "negative" class based on no keyword
         wrap_label_name_dataset_loader = tqdm(label_name_dataset_loader) if rank == 0 else label_name_dataset_loader
         try:
             for batch in wrap_label_name_dataset_loader:
@@ -382,7 +403,7 @@ class ClassifTrainer(object):
             self.cuda_mem_error(err, "eval", rank)
 
     # construct category vocabulary
-    def category_vocabulary(self, top_pred_num=50, category_vocab_size=100, loader_name="category_vocab.pt", loader_freq_name="category_vocab_freq.pt", check_exist = True):
+    def category_vocabulary(self, top_pred_num=50, category_vocab_size=100, num_keywords = None, loader_name="category_vocab.pt", loader_freq_name="category_vocab_freq.pt", check_exist = True):
         loader_file = os.path.join(self.dataset_dir, loader_name)
         print('GPU AVAILABLE : ', torch.cuda.is_available())
         if os.path.exists(loader_file) and check_exist:
@@ -391,78 +412,98 @@ class ClassifTrainer(object):
             self.category_words_freq = torch.load(os.path.join(self.dataset_dir, loader_freq_name))
         else:
             print("Contructing category vocabulary.")
+            if num_keywords is None:
+                num_keywords = self.num_keywords
             if not os.path.exists(self.temp_dir):
                 os.makedirs(self.temp_dir)
-            mp.spawn(self.category_vocabulary_dist, nprocs=self.world_size, args=(top_pred_num, loader_name))
+            mp.spawn(self.category_vocabulary_dist, nprocs=self.world_size, args=(top_pred_num,num_keywords, loader_name))
             gather_res = []
             for f in os.listdir(self.temp_dir):
                 if f[-3:] == '.pt':
                     gather_res.append(torch.load(os.path.join(self.temp_dir, f)))
             assert len(gather_res) == self.world_size, "Number of saved files not equal to number of processes!"
-            self.category_words_freq = {i: defaultdict(float) for i in range(self.num_class)}
-            for i in range(self.num_class):
+            self.category_words_freq = {i: defaultdict(float) for i in range(num_keywords)}
+            for i in range(num_keywords):
                 for category_words_freq in gather_res:
                     for word_id, freq in category_words_freq[i].items():
                         self.category_words_freq[i][word_id] += freq
+
             print('loop', self.vocab_loop_counter)
+
             if self.vocab_loop_counter == 0:
                 self.old_category_vocab_freq = self.category_words_freq
-                for i in range(self.num_class):
-                    self.label_names_used[i] = []
+
+                for i in range(num_keywords):
+                    self.label_names_used[i] = self.label_name_dict[i]
                 self.vocab_loop_counter += 1
             else:
+                
+                #### we enter the second loop and needs to average result
+                ### But we only run loop over class in self.class_to_loop_over
+                for i in self.old_category_vocab_freq:
+                    if i in self.class_to_loop_over:
+                        j = self.class_to_loop_over.index(i)
+                        for word_id, freq in self.old_category_vocab_freq[i].items():
+                            if word_id in self.category_words_freq[j].keys() :
+                                self.old_category_vocab_freq[i][word_id] += self.category_words_freq[j][word_id]
+
+                        for word_id, freq in self.category_words_freq[j].items():
+                            if word_id not in self.old_category_vocab_freq[i].items():
+                                self.old_category_vocab_freq[i][word_id] = self.category_words_freq[j][word_id]
+
+
+                self.category_words_freq = self.old_category_vocab_freq
                 self.vocab_loop_counter += 1
-                for i in range(self.num_class):
-                    for word_id, freq in self.old_category_vocab_freq[i].items():
-                        if word_id in self.category_words_freq[i].keys() :
-                            # print(word_id, self.category_words_freq[i][word_id],self.old_category_vocab_freq[i][word_id])
-                            self.category_words_freq[i][word_id] += self.old_category_vocab_freq[i][word_id]
-                        else:
-                            self.category_words_freq[i][word_id] = self.old_category_vocab_freq[i][word_id]
-                self.old_category_vocab_freq = self.category_words_freq
-
+            print('self.category_words_freq before filtering ', self.category_words_freq)
+            self.label_name_dict = self.label_names_used
             self.filter_keywords(category_vocab_size)
-
-            #### HUMAN IN THE LOOP PART
-            # new_category_vocab = {}
-            # for i, category_vocab in self.category_vocab.items():
-            #     temp_category_vocab = []
-            #     for j, w in enumerate(category_vocab):
-            #         if w in self.non_accepted_words:
-            #             continue
-            #         else:
-            #             temp_category_vocab.append(w)
-            #     new_category_vocab[i] = np.array(temp_category_vocab)
-            # self.category_vocab = new_category_vocab
-            #### END OF THE HUMAN INVOLVEMENT
 
 
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
             print('length', len(self.category_vocab))
             for i, category_vocab in self.category_vocab.items():
-                print('cate_vocab', category_vocab)
-                self.label_names_used[i].append(self.inv_vocab[category_vocab[0]])
+
                 print(f"Class {i} category vocabulary: {[self.inv_vocab[w] for w in category_vocab]}\n")
 
-            if self.loop_over_vocab > self.vocab_loop_counter:
+            self.class_to_loop_over = []
+            
+            for i in self.occurences_per_class:
+                if self.occurences_per_class[i] < self.minimum_occurences_per_class:
+                    self.class_to_loop_over.append(i)
+            if len(self.class_to_loop_over) > 0:
                 new_label_names_file = "temporary_label_names.txt"
                 labels_to_write = []
                 print('Label name already used', self.label_names_used)
                 for i, cat_dict in self.category_words_freq.items():
-                    new_label_names = sorted(cat_dict.items(), key=lambda item: item[1], reverse=True)  
-                    for name, frequency in new_label_names:
-                        if self.inv_vocab[name] not in self.label_names_used[i]:
-                            new_label_name = name
-                            break
-                    print('new label name', self.inv_vocab[new_label_name], frequency)
-                    labels_to_write.append(self.inv_vocab[new_label_name]+'\n')
+                    if i in self.class_to_loop_over:
+                        print("loop over ", i)
+                        new_label_names = sorted(cat_dict.items(), key=lambda item: item[1], reverse=True)  
+                        for name, frequency in new_label_names:
+                            if self.inv_vocab[name] not in self.label_names_used[i]:
+                                new_label_name = name
+                                self.label_names_used[i].append(self.inv_vocab[new_label_name])
+                                print('new label name', self.inv_vocab[new_label_name], frequency)
+                                print('new label name used :', self.label_names_used)
+                                break
+                    
+                        positive_or_negative = 'positive' if self.label_name_positivity[i]==1 else "negative"
+                        labels_to_write.append(self.inv_vocab[new_label_name]+';'+positive_or_negative+'\n')
+
                 with open(os.path.join(self.dataset_dir, "temporary_label_names.txt"), 'w') as file:
                     file.writelines(labels_to_write)
                     del labels_to_write
-                self.read_label_names(self.dataset_dir, new_label_names_file)
+
+                ### Read new labels name from the temp file
+                self.read_label_names(self.dataset_dir, new_label_names_file,change_positivity_var= False)
+                ### Look for occurences of these new labels
                 self.read_data(self.args.dataset_dir, self.args.train_file,self.args.train_label_file, self.args.test_file, self.args.test_label_file, check_exist=False)
-                self.category_vocabulary(check_exist = False)
+                new_occurences = self.count_occurences(self.args.dataset_dir,self.args.train_file)
+                print('new_occurences', new_occurences)
+                for i, class_idx in enumerate(self.class_to_loop_over):
+                    self.occurences_per_class[class_idx] += new_occurences[i]
+                print('occurences', self.occurences_per_class)
+                self.category_vocabulary(check_exist = False,num_keywords = len(self.class_to_loop_over))
             try :
                 os.remove(os.path.join(self.dataset_dir, "temporary_label_names.txt"))
             except:
@@ -509,7 +550,7 @@ class ClassifTrainer(object):
                         valid_doc = torch.sum(valid_idx, dim=-1) > 0
                         if valid_doc.any():
                             mask_label = -1 * torch.ones_like(input_ids)
-                            mask_label[valid_idx] = self.true_label[i]
+                            mask_label[valid_idx] = self.true_label[i]  ## true label = [true_label_keywrd_1, true_label_keyword_2, ...]
                             all_input_ids.append(input_ids[valid_doc].cpu())
                             all_mask_label.append(mask_label[valid_doc].cpu())
                             all_input_mask.append(input_mask[valid_doc].cpu())
@@ -554,7 +595,7 @@ class ClassifTrainer(object):
             all_input_ids = torch.cat([res["all_input_ids"] for res in gather_res], dim=0)
             all_mask_label = torch.cat([res["all_mask_label"] for res in gather_res], dim=0)
             all_input_mask = torch.cat([res["all_input_mask"] for res in gather_res], dim=0)
-            category_doc_num = {i: 0 for i in range(self.num_class)}
+            category_doc_num = {i: 0 for i in range(self.num_keywords)}
             try:
                 ground_truth_label = torch.cat([res['true_label_class'] for res in gather_res], dim=0)
             except:
@@ -632,19 +673,12 @@ class ClassifTrainer(object):
         docs_labels = [int(doc.strip()) for doc in true_labels.readlines()]
         self.docs_labels = docs_labels
         dict_label = {0:[], 1:[], 2:[],3:[]}
-        # self.list_label = [int(label) for label in docs_labels]
+
 
         for i, label in enumerate(docs_labels):
             dict_label[int(label)].append(i)
         docs = [doc.strip() for doc in corpus.readlines()]
 
-        category_vocab = []
-        for k in data_vocab.keys():
-            category_vocab += list(data_vocab[k])
-        self.all_keyword_category_vocab = category_vocab ### find a better way if multiple keyword and especially if negative ones
-        self.list_all_keyword = []
-        for w in self.all_keyword_category_vocab:
-            self.list_all_keyword.append(self.inv_vocab[w])
         self.train_docs = docs
 
     def loading_for_test(self, loader_name='train.txt', loader_label_name = 'train_labels.txt'):
@@ -658,8 +692,6 @@ class ClassifTrainer(object):
         if true_label is None:
             assert(self.true_label is not None)
             true_label = self.true_label
-        # if test_data is None:
-        #     docs = self.docs
         docs, docs_labels = self.loading_for_test(test_data, test_data_labels)
         if device is None:
             device = self.device
@@ -684,7 +716,6 @@ class ClassifTrainer(object):
             
         inputs = torch.stack([self.non_batch_encode(docs[i])[0].squeeze() for i in test_list])
         attention_mask = torch.stack([self.non_batch_encode(docs[i])[1].squeeze() for i in test_list])
-        # true_labels = torch.stack([torch.tensor(int(docs_labels[i] in true_label)) for i in test_list])
         true_labels = torch.stack([torch.tensor(int(docs_labels[i] in self.true_label)) for i in test_list])
         
 
@@ -706,13 +737,6 @@ class ClassifTrainer(object):
                     false_negative += ((1-predictions.cpu())*(labels_test)).sum().item()
                     correct_pred += (labels_test == predictions.cpu()).sum().item()
 
-
-                    
-                    
-                    # old_true_negative += ((1-prediction.cpu())*(1-labels_test)).sum().item()
-                    # old_false_positive += ((prediction.cpu())*(1-labels_test)).sum().item()
-                    # old_false_negative += ((1-prediction.cpu())*(labels_test)).sum().item()
-                    # old_correct_pred += (labels_test == prediction.cpu()).sum().item()
 
                 else:
                     true_positive += (prediction.cpu()*labels_test).sum().item()
@@ -751,6 +775,54 @@ class ClassifTrainer(object):
         model.train()
         return accuracy, precision, recall, f1_score
 
+    def return_all_keywords_related_vocab(self, positive = True, negative = False, loader_name = "category_vocab.pt"):
+        '''
+        The function takes as input the category vocab built around the different keywords , the type of keywords one is interested in 'positive', 'negative',
+        or both, and return a list with all the related words from this type of keywords.
+        Example:
+        return_all_keywords_related_vocab(positive) will return the list of concatenated category vocabs of all positive keywords(tokens and strings so 2 lists)
+        '''
+        list_all_related_words = []
+        list_all_related_words_tokens = []
+        data_vocab = torch.load(os.path.join(self.dataset_dir, loader_name))
+        if positive : 
+            for k in data_vocab.keys():
+                if self.label_name_positivity[k] :
+                    list_all_related_words_tokens += list(data_vocab[k])
+                    list_all_related_words += [self.inv_vocab[w] for w in data_vocab[k]]
+        if negative:
+            for k in data_vocab.keys():
+                if ~self.label_name_positivity[k] :
+                    list_all_related_words_tokens += list(data_vocab[k])
+                    list_all_related_words += [self.inv_vocab[w] for w in data_vocab[k]]
+
+        return list_all_related_words_tokens, list_all_related_words
+
+    def joint_cate_vocab(self, positive = True, negative = False, topk = 100, min_occurences = 40,
+                        loader_name='category_vocab.pt', loader_name_freq = 'category_vocab_freq.pt'):
+        '''
+        The function a joint category vocab(a list of words in string, and their tokenized version) of topk words in the positive, negative or both type of keywords related vocab.
+        '''
+
+        category_vocab_freq = torch.load(os.path.join(self.dataset_dir, loader_name_freq))
+        category_vocab = torch.load(os.path.join(self.dataset_dir, loader_name))
+
+        new_category_vocab_freq = {i : {j : category_vocab_freq[i][j] for j in category_vocab_freq[i] if 
+                                j in category_vocab[i]} for i in category_vocab_freq}
+        df = pd.DataFrame(new_category_vocab_freq).fillna(0)
+        if positive :
+            if negative :
+                joint_vocab_tokens = list(df.sum(1)[df.sum(1)>min_occurences].sort_values(ascending = False).head(topk).index)
+            else :
+                joint_vocab_tokens = list(df[[i for i in df.columns if self.label_name_positivity[i]]].sum(1)[df.sum(1)>min_occurences].sort_values(ascending = False).head(topk).index)
+        elif negative:
+            joint_vocab_tokens = list(df[[i for i in df.columns if ~self.label_name_positivity[i]]].sum(1)[df.sum(1)>min_occurences].sort_values(ascending = False).head(topk).index)
+        else :
+            print('Should ask for either positive, negative, or both')
+        
+        joint_vocab = [self.inv_vocab[w] for w in joint_vocab_tokens]
+
+        return joint_vocab_tokens, joint_vocab
 
 
     def compute_preset_negative(self,docs = None, verbose = None, loader_name = 'pre_negative_dataloader.pt'):
@@ -762,6 +834,8 @@ class ClassifTrainer(object):
         else:
             negative_doc=[]
             negative_doc_label = []
+
+            list_all_positive_words_tokens, list_all_positive_words = self.return_all_keywords_related_vocab(positive = True, negative = False)
             if docs is None:
                 docs = self.train_docs
             if verbose is None:
@@ -778,7 +852,7 @@ class ClassifTrainer(object):
                         break
                     if idx == len(doc) - 1 or not doc[idx+1].startswith("##"):
                         word = ''.join(wordpcs)
-                        if word in self.list_all_keyword:
+                        if word in list_all_positive_words:
                             label_idx[idx] = 0
                             break
                         new_word = ''.join(wordpcs)
@@ -817,7 +891,9 @@ class ClassifTrainer(object):
         
 
     def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 15, min_similar_words = 0,
-                                max_category_word =0, verbose = None, device = None, loader_name = 'pre_negative_dataloader.pt'):
+                                max_category_word =0, verbose = None, device = None, 
+                                loader_name = 'pre_negative_dataloader.pt', loader_cate_name='mcp_train.pt'):
+
         print('Compute Negative Training Set')
         if device is None:
             device = self.device
@@ -826,11 +902,7 @@ class ClassifTrainer(object):
         if verbose is None:
             verbose = self.verbose
         model.to(device)
-        # loader_file = os.path.join(self.dataset_dir, loader_name)
-        # if os.path.exists(loader_file):
-        #     print(f"Loading pre_negative_dataloader data from {loader_file}")
-        #     self.pre_negative_dataloader = torch.load(loader_file)
-        # else: 
+
         self.compute_preset_negative(loader_name=loader_name)
             # self.pre_negative_dataloader = torch.load(loader_file)
         if os.path.exists(os.path.join(self.dataset_dir,'negative_dataset.pt')):
@@ -845,10 +917,11 @@ class ClassifTrainer(object):
             correct_label = 0
             verbose = True
             topk = 15
-            # vocab = torch.tensor(self.pos_category_vocab).to(device)
             min_similar_words = 0
             max_category_word = 0
-
+            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 50)
+            print("list_positive_words_tokens",list_positive_words_tokens)
+            print('list_positive_words',list_positive_words)
             # Computations
             with torch.no_grad():
                 for k, batch in tqdm(enumerate(self.pre_negative_dataloader)):
@@ -864,13 +937,16 @@ class ClassifTrainer(object):
                         masked_pred = doc[:input_mask[i].sum().item(),:]
                         # Selecting the TOP 'k' words predicted at each position
                         _ , words = torch.topk(masked_pred, topk, -1)
+                        valid =  True
                         counter = 0
                         # Loop over the words in each document
                         for word in words.squeeze():
-                            counter += int(len(np.intersect1d(word.cpu().numpy(), self.pos_category_vocab))>min_similar_words)
+                            
+                            counter += int(len(np.intersect1d(word.cpu().numpy(),list_positive_words_tokens))>min_similar_words)
                             if counter > max_category_word:
+                                valid = False
                                 break
-                        if counter <= max_category_word:             
+                        if valid:            
                             verified_negative.append(k*4+i)
                             ground_label.append(label_id[i])
                             if label_id[i] not in self.true_label:
@@ -887,7 +963,28 @@ class ClassifTrainer(object):
                             print('accuracy :', neg_set_accuracy)
                             print('number of elements retrieved', len(verified_negative))
                 
+            self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
+            
+            # Keep only the ones not in a negative_keyword class
+            
 
+
+            if 0 in self.label_name_positivity.values():
+                valid_indices = []
+                original_length = len(self.negative_dataset)
+                dataset = torch.load(os.path.join(self.dataset_dir,loader_cate_name))
+                dataset = dataset['input_ids']
+                for i, neg in enumerate(self.negative_dataset):
+                    valid = True
+                    for data in dataset:
+                        if (neg[0]==data).all().item():
+                            valid = False
+                            break
+                    if valid:
+                        valid_indices.append(i)
+
+                self.negative_dataset = Subset(self.negative_dataset, valid_indices)
+            print("Difference after intersection reduction :", original_length - len(self.negative_dataset))
             #EXPORT THE DATASET 
             self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
             torch.save(self.negative_dataset, os.path.join(self.dataset_dir,'negative_dataset.pt'))
@@ -1004,7 +1101,7 @@ class ClassifTrainer(object):
             'pos_set_accuracy' : pos_set_accuracy,
             'neg_set' : len(self.negative_dataset),
             'neg_set_accuracy' :neg_set_accuracy,
-            'loop_over_vocab' : self.number_of_loop_over_vocab,
+            'min occurences' : self.minimum_occurences_per_class,
             'positive_keywords' : self.positive_keywords,
             'negative_keywords' : self.negative_keywords}
 
@@ -1047,9 +1144,9 @@ class ClassifTrainer(object):
                                 attention_mask=input_mask)
                     ### LOSS
                     logits_cls = logits[:,0]
-                    # print(logits_cls.size())
-                    # print(labels.size())
-                    loss = train_loss(logits_cls.view(-1, 2), labels.view(-1)) / accum_steps            
+                    # print('labels', labels, labels.size())
+                    # print('logits_cls',logits_cls,logits_cls.size())
+                    loss = train_loss(logits_cls.contiguous().view(-1, self.num_class), labels.contiguous().view(-1)) / accum_steps            
                     total_train_loss += loss.item()
                     loss.backward()
                     if (j+1) % accum_steps == 0:
@@ -1086,81 +1183,10 @@ class ClassifTrainer(object):
 
 
 
-
-                  
-
-
-
-        
-        
-
-
-
-
-    # # masked category prediction (distributed function)
-    # def mcp_dist(self, rank, epochs=5, loader_name="mcp_model.pt"):
-    #     model = self.set_up_dist(rank)
-    #     mcp_dataset_loader = self.make_dataloader(rank, self.mcp_data, self.train_batch_size)
-    #     total_steps = len(mcp_dataset_loader) * epochs / self.accum_steps
-    #     optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=2e-5, eps=1e-8)
-    #     scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0.1*total_steps, num_training_steps=total_steps)
-    #     try:
-    #         for i in range(epochs):
-    #             model.train()
-    #             total_train_loss = 0
-    #             if rank == 0:
-    #                 print(f"Epoch {i+1}:")
-    #             wrap_mcp_dataset_loader = tqdm(mcp_dataset_loader) if rank == 0 else mcp_dataset_loader
-    #             model.zero_grad()
-    #             for j, batch in enumerate(wrap_mcp_dataset_loader):
-    #                 input_ids = batch[0].to(rank)
-    #                 input_mask = batch[1].to(rank)
-    #                 labels = batch[2].to(rank)
-    #                 mask_pos = labels >= 0
-    #                 labels = labels[mask_pos]
-    #                 # mask out category indicative words
-    #                 input_ids[mask_pos] = self.mask_id
-    #                 logits = model(input_ids, 
-    #                                pred_mode="classification",
-    #                                token_type_ids=None, 
-    #                                attention_mask=input_mask)
-    #                 logits = logits[mask_pos]
-    #                 loss = self.mcp_loss(logits.view(-1, self.num_class), labels.view(-1)) / self.accum_steps
-    #                 total_train_loss += loss.item()
-    #                 loss.backward()
-    #                 if (j+1) % self.accum_steps == 0:
-    #                     # Clip the norm of the gradients to 1.0.
-    #                     nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-    #                     optimizer.step()
-    #                     scheduler.step()
-    #                     model.zero_grad()
-    #             avg_train_loss = torch.tensor([total_train_loss / len(mcp_dataset_loader) * self.accum_steps]).to(rank)
-    #             gather_list = [torch.ones_like(avg_train_loss) for _ in range(self.world_size)]
-    #             dist.all_gather(gather_list, avg_train_loss)
-    #             avg_train_loss = torch.tensor(gather_list)
-    #             if rank == 0:
-    #                 print(f"Average training loss: {avg_train_loss.mean().item()}")
-    #         if rank == 0:
-    #             loader_file = os.path.join(self.dataset_dir, loader_name)
-    #             torch.save(model.module.state_dict(), loader_file)
-    #     except RuntimeError as err:
-    #         self.cuda_mem_error(err, "train", rank)
-
-    # # masked category prediction
-    # def mcp(self, top_pred_num=50, match_threshold=20, epochs=5, loader_name="mcp_model.pt"):
-    #     loader_file = os.path.join(self.dataset_dir, loader_name)
-    #     if os.path.exists(loader_file):
-    #         print(f"\nLoading model trained via masked category prediction from {loader_file}")
-    #     else:
-    #         self.prepare_mcp(top_pred_num, match_threshold)
-    #         print(f"\nTraining model via masked category prediction.")
-    #         mp.spawn(self.mcp_dist, nprocs=self.world_size, args=(epochs, loader_name))
-    #     self.model.load_state_dict(torch.load(loader_file))
-
     # prepare self training data and target distribution
     def prepare_self_train_data(self, rank, model, idx):
 
-        ### TO DO ADD UNCERTAINTY WITH DROPOUT
+        ### TO DO : ADD UNCERTAINTY WITH DROPOUT
         target_num = min(self.world_size * self.train_batch_size * self.update_interval * self.accum_steps, len(self.train_data["input_ids"]))
         if idx + target_num >= len(self.train_data["input_ids"]):
             select_idx = torch.cat((torch.arange(idx, len(self.train_data["input_ids"])),
