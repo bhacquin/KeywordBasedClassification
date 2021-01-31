@@ -108,6 +108,10 @@ Politics      | 70            | ?             | ??            |
 {Business, Technology}  | 92%  |  ??          | ??            |
 {Politics, Business, Technology}  |   ??   |  ??     |    ??     |
 
+To compare with other benchmark
+Model         | F1 - score    |    Precision  |     Recall    |  
+------------- | ------------- |-------------- | ------------  |
+Cate          | 85            | ?             | ??            |
 
 ### DBPedia
 
@@ -126,10 +130,27 @@ Keywords      | F1 - score    |    Precision  |     Recall    |
 Good          | ??            | ??            | ??            |
 Bad           | ??            | ??            | ??            |
 
+To compare with other benchmark
+Model         | F1 - score    |    Precision  |     Recall    |  
+------------- | ------------- |-------------- | ------------  |
+Cate          | ??            | ?             | ??            |
 
 
 
 ## Reproducing the Results - Short
+
+### Data
+The data must be in the right format and all files in the same directory.
+Add the keywords as explained in a text file in the same directory.
+
+It is better to split your dataset into train and test files, both with the same format
+
+Assuming you gave keywords and expect to retrieve texts with label 1 and 5 for instance.
+Then simply run from the root directory:
+```bash
+python train.py --dataset_dir your_data_directory --keywords_file file_name --train_file file_name --test_file file_name --train_label_file file_name --test_label_file file_name -- true_label 1 5
+```
+with the proper parameters
 
 ## Reproducing the Results - Detailed
 
@@ -149,4 +170,19 @@ trainer.category_vocab()
 
 ## Next Steps - Improvements
 Uncertainty use.
-## Citations
+
+
+
+## References
+
+@inproceedings{meng2020text,
+  title={Text Classification Using Label Names Only: A Language Model Self-Training Approach},
+  author={Meng, Yu and Zhang, Yunyi and Huang, Jiaxin and Xiong, Chenyan and Ji, Heng and Zhang, Chao and Han, Jiawei},
+  booktitle={Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing},
+  year={2020},
+}
+
+* Jacob Devlin, Ming-Wei Chang, Kenton Lee, andKristina Toutanova. 2019. Bert: Pre-training of deepbidirectional transformers for language understand-ing. InNAACL-HLT
+* Yu Meng, Jiaming Shen, Chao Zhang, and Jiawei Han.2018. Weakly-supervised neural text classification.InCIKM
+* Yu Meng, Jiaxin Huang, Guangyuan Wang, ZihanWang, Chao Zhang, Yu Zhang, and Jiawei Han.2020a. Discriminative topic mining via category-name guided text embedding. InWWW
+
