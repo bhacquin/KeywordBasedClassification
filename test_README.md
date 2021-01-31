@@ -96,6 +96,19 @@ keyword2,synonyme21,synonym22;negative
 ```
 
 ## Results
+Results are obviously depending on what the user looks for. 
+Here we take as an hypothesis that one is looking for a combination of the known labels so we can track results with proper metrics.
+
+### AGNews
+
+Keywords      | F1 - score    |    Precision  |     Recall    |  
+------------- | ------------- |-------------- | ------------  |
+Sport         | 85            | ?             | ??            |
+Politics      | 70            | ?             | ??            |
+{Business, Technology}  | 92%  |  ??          | ??            |
+{Politics, Business, Technology}  |   ??   |  ??     |    ??     |
+
+
 
 ## Reproducing the Results - Short
 
