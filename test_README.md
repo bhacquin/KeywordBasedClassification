@@ -153,12 +153,13 @@ python train.py --dataset_dir your_data_directory --keywords_file file_name --tr
 with the proper parameters
 
 ## Reproducing the Results - Detailed
-
-### Environment
-#### Dataset
-#### Keywords
+Here will be described in more detailed how to run things separetely. 
+For this, I will explain the ```train.py``` step by step.
+ 
 #### Hyperparameters
-#### Command line
+The ```train.py``` has a number of hyperparameters that can be tuned. There are described on the file.
+#### Step by Step
+##### Instanciation
 ``` python
 trainer = ClassifTrainer()
 ```
@@ -166,6 +167,8 @@ trainer = ClassifTrainer()
 ```python
 trainer.category_vocab()
 ```
+This method creates one category vocabulary per keyword in order to use it later.
+
 ## Running on new datasets
 
 ## Next Steps - Improvements
