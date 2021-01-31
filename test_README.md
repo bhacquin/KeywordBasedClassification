@@ -18,14 +18,30 @@ pip install -r requirements.txt
 ## Method - Abstract
 
 
+
+
 ## Datasets
 
 
 ## Results
 
+## Reproducing the Results - Short
 
-## Reproducing the Results
+## Reproducing the Results - Detailed
 
+### Environment
+#### Dataset
+#### Keywords
+#### Hyperparameters
+#### Command line
+``` python
+trainer = ClassifTrainer()
+```
+### 'Category Vocabulary per Keyword'
+```python
+trainer.category_vocab()
+```
+## Running on new datasets
 
 ## Next Steps - Improvements
 
