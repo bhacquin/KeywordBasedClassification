@@ -32,11 +32,18 @@ With those automatically found labels, we fine-tuned a language model on them.
 
 ### Third Stage - Self Training
 As described in **Text Classification Using Label Names Only: A Language Model Self-Training Approach**, the model is then self trained to boost its confidence on the whole dataset this time.
+Self-Training has been seen to improve significantly the recall without really deteriorating the precision, hence self-training results in a much higher F1-score.
 
-
+## Metrics - True Labels
+The model does not use the true labels of the dataset at any point. Those labels are only use to track metrics and evaluate the performance of the model. We study the classic following metrics:
+* F1-score
+* Recall
+* Precision
+* Accuracy
 
 ## Datasets
-
+Describe datasets, how to get them.
+Supposed format of texts, labels
 
 ## Results
 
@@ -59,5 +66,5 @@ trainer.category_vocab()
 ## Running on new datasets
 
 ## Next Steps - Improvements
-
+Uncertainty use.
 ## Citations
