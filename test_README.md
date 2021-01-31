@@ -175,14 +175,7 @@ Uncertainty use.
 
 ## References
 
-@inproceedings{meng2020text,
-  title={Text Classification Using Label Names Only: A Language Model Self-Training Approach},
-  author={Meng, Yu and Zhang, Yunyi and Huang, Jiaxin and Xiong, Chenyan and Ji, Heng and Zhang, Chao and Han, Jiawei},
-  booktitle={Proceedings of the 2020 Conference on Empirical Methods in Natural Language Processing},
-  year={2020},
-}
-
 * Jacob Devlin, Ming-Wei Chang, Kenton Lee, andKristina Toutanova. 2019. Bert: Pre-training of deepbidirectional transformers for language understand-ing. InNAACL-HLT
 * Yu Meng, Jiaming Shen, Chao Zhang, and Jiawei Han.2018. Weakly-supervised neural text classification.InCIKM
 * Yu Meng, Jiaxin Huang, Guangyuan Wang, ZihanWang, Chao Zhang, Yu Zhang, and Jiawei Han.2020a. Discriminative topic mining via category-name guided text embedding. InWWW
-
+* Yu Meng, Yunyi Zhang, Jiaxin Huang, Chenyan Xiong, Heng Ji, CHao Zhang, Jiawei Han. 2020. Text Classification Using Label Names Only: A Language Model Self-Training Approach.EMMNLP
