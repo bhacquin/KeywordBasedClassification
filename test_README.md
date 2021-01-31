@@ -18,6 +18,14 @@ pip install -r requirements.txt
 ## Method - Abstract
 The model learns to retrieve texts of potential interests for a specific user using keywords only. 
 
+### Improvements over LOTClass algorithm
+
+Our model learns to classify texts only based upon a number of keywords provided by the user.
+
+* In opposition to what was done in LOTClass, our **model does not require the keywords to be the underlying labels of the dataset**, nor do the keywords need to represent the whole dataset faithfully.
+* The idea is that a user can easily describe his/her interests but cannot easily know what the dataset consists of , nor could he/she describe what he/she is *not* interested in. Hence **our algorithm can work without any negative keywords**.
+* Our model can work with *as few as one single keyword*
+
 ### First Stage - Category Vocabulary
 Based on **Text Classification Using Label Names Only: A Language Model Self-Training Approach**, we follow the same approach and will create sets of closely related words around each keyword provided by the user.
 
@@ -34,7 +42,9 @@ With those automatically found labels, we fine-tuned a language model on them.
 As described in **Text Classification Using Label Names Only: A Language Model Self-Training Approach**, the model is then self trained to boost its confidence on the whole dataset this time.
 Self-Training has been seen to improve significantly the recall without really deteriorating the precision, hence self-training results in a much higher F1-score.
 
-## Metrics - True Labels
+
+
+### Metrics - True Labels
 The model does not use the true labels of the dataset at any point. Those labels are only use to track metrics and evaluate the performance of the model. We study the classic following metrics:
 * F1-score
 * Recall
@@ -53,7 +63,21 @@ In the datasets folder, there are four ```get_data.sh``` for downloading the dat
 ### Format
 The texts are supposed to be all in one text file with one text per line.
 
+```
+text1
+text2
+text3
+...
+```
+
 The labels to compute the metrics are expected to be in a separate text file with one label per line. The labels file and text file are expected to show texts in the same order.
+
+```
+LabelOFText1
+LabelOfText2
+LabelOfText3
+...
+```
 
 The keywords are supposed to be put in a different file under this format:
 ```
