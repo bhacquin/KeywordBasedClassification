@@ -109,6 +109,25 @@ Politics      | 70            | ?             | ??            |
 {Politics, Business, Technology}  |   ??   |  ??     |    ??     |
 
 
+### DBPedia
+
+Keywords      | F1 - score    |    Precision  |     Recall    |  
+------------- | ------------- |-------------- | ------------  |
+athlete         | ??            | ?             | ??            |
+artist          | ??            | ?             | ??            |
+{tree, river}   |    ??        |    ??          | ??            |
+{river, mountain, hill}  |   ??   |  ??     |    ??     |
+
+
+### IMDB
+
+Keywords      | F1 - score    |    Precision  |     Recall    |  
+------------- | ------------- |-------------- | ------------  |
+Good          | ??            | ??            | ??            |
+Bad           | ??            | ??            | ??            |
+
+
+
 
 ## Reproducing the Results - Short
 
