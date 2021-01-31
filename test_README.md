@@ -24,7 +24,7 @@ Our model learns to classify texts only based upon a number of keywords provided
 
 * In opposition to what was done in LOTClass, our **model does not require the keywords to be the underlying labels of the dataset**, nor do the keywords need to represent the whole dataset faithfully.
 * The idea is that a user can easily describe his/her interests but cannot easily know what the dataset consists of , nor could he/she describe what he/she is *not* interested in. Hence **our algorithm can work without any negative keywords**.
-* Our model can work with *as few as one single keyword*
+* Our model can work with **as few as one single keyword**
 
 ### First Stage - Category Vocabulary
 Based on **Text Classification Using Label Names Only: A Language Model Self-Training Approach**, we follow the same approach and will create sets of closely related words around each keyword provided by the user.
