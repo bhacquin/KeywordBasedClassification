@@ -42,8 +42,34 @@ The model does not use the true labels of the dataset at any point. Those labels
 * Accuracy
 
 ## Datasets
-Describe datasets, how to get them.
-Supposed format of texts, labels
+We have been working on four datasets : 
+* AGNews, 120k english news labelled as : Sport, Politics, Business or Technology (MultiClass)
+* DBPedia datasets : a large dataset with different granurality of labels.
+* IMDB : 50k Movie reviews labelled as positive or negative
+* Amazon : ?
+
+In the datasets folder, there are four ```get_data.sh``` for downloading the datasets we have been using. As the scripts might not be updated anymore, those datasets can also be found online. 
+
+### Format
+The texts are supposed to be all in one text file with one text per line.
+
+The labels to compute the metrics are expected to be in a separate text file with one label per line. The labels file and text file are expected to show texts in the same order.
+
+The keywords are supposed to be put in a different file under this format:
+```
+keyword1;positive 
+keyword2;negative
+keyword3;negative
+keyword4;positive
+....
+```
+Keywords are expected to be different and not synonyme if you intend to put synonym please put it this:
+
+```
+keyword1,synonym11;positive
+keyword2,synonyme21,synonym22;negative
+....
+```
 
 ## Results
 
