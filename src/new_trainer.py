@@ -511,7 +511,7 @@ class ClassifTrainer(object):
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
             for i, category_vocab in self.category_vocab.items():
-
+            ### TO DO : Joffrey Recupérer ca
                 print(f"Class {i} category vocabulary: {[self.inv_vocab[w] for w in category_vocab]}\n")
 
             self.class_to_loop_over = []
@@ -663,6 +663,7 @@ class ClassifTrainer(object):
             for i in category_doc_num:
                 assert category_doc_num[i] > 10, f"Too few ({category_doc_num[i]}) documents with category indicative terms found for category {i}; " \
                        "try to add more unlabeled documents to the training corpus (recommend) or reduce `--match_threshold` (not recommend)"
+        ### TO DO : Joffrey Recupérer ca
         print(f"There are totally {len(self.mcp_data['input_ids'])} documents with category indicative terms.")
 
 
@@ -706,6 +707,8 @@ class ClassifTrainer(object):
 
         self.pos_set_accuracy = number_of_true_positive/(number_of_true_positive+number_of_false_positive)
         self.number_elements_pos_set = number_of_true_positive+number_of_false_positive
+
+        ### TO DO : Joffrey Recupérer ca
         if self.verbose :
             print("PRECISION of the positive set : ", number_of_true_positive/(number_of_true_positive+number_of_false_positive))
             print("NUMBER OF ELEMENTS in the positive set", self.number_elements_pos_set)
@@ -1008,7 +1011,8 @@ class ClassifTrainer(object):
                         neg_set_accuracy = correct_label/len(verified_negative)
                     else:
                         neg_set_accuracy = 0
-                    
+
+                    ### TO DO : Joffrey Recupérer ca
                     if k%100 == 0 and verbose:
                         if len(verified_negative)>0:
                             print('accuracy :', neg_set_accuracy)
@@ -1232,6 +1236,7 @@ class ClassifTrainer(object):
                         scheduler.step()
                         self.model.zero_grad()
                         
+                    ### TO DO : Joffrey Recupérer ca
                     if j % (3*accum_steps) == 0 :
                         print('loss',loss*accum_steps)
                         accuracy, precision, recall, f1_score = self.test(self.model, number = 1024)
