@@ -565,7 +565,6 @@ class ClassifTrainer(object):
     def prepare_mcp_dist(self, rank, top_pred_num=50, match_threshold=25, loader_name="mcp_train.pt"):
         model = self.set_up_dist(rank)
         model.eval()
-        print(len(self.train_data))
         train_dataset_loader = self.make_dataloader(rank, self.train_data, self.eval_batch_size)
         if len(train_dataset_loader.dataset[0]) == 3:
             label_present = True
@@ -1129,8 +1128,8 @@ class ClassifTrainer(object):
             self.model = ClassifModel.from_pretrained(self.pretrained_lm,
                                                    output_attentions=False,
                                                    output_hidden_states=False,
-                                                   num_labels=self.num_class-1) 
-
+                                                   num_labels=self.num_class-1).to(device)
+            model = self.model
 
         train_dataset = torch.utils.data.TensorDataset(data,mask, target)
         ### Construction of the weighted sampler based on sets' sizes and of the target vector #########
@@ -1174,8 +1173,8 @@ class ClassifTrainer(object):
             'neg_set_accuracy' :neg_set_accuracy,
             'min occurences' : self.minimum_occurences_per_class}
 
-        optimizer = AdamW([{'params' : filter(lambda p: p.requires_grad, model.bert.parameters()), 'lr' : 1e-2*learning_rate}, 
-                            {'params' : filter(lambda p: p.requires_grad, model.classifier.parameters()), 'lr' : learning_rate}], eps=1e-8)
+        optimizer = AdamW([{'params' : filter(lambda p: p.requires_grad, self.model.bert.parameters()), 'lr' : 1e-2*learning_rate}, 
+                            {'params' : filter(lambda p: p.requires_grad, self.model.classifier.parameters()), 'lr' : learning_rate}], eps=1e-8)
         # optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, eps=1e-8)
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0.1*total_steps, num_training_steps=total_steps)
 
@@ -1221,14 +1220,14 @@ class ClassifTrainer(object):
                         # Clip the norm of the gradients to 1.0.
                         
                         losses_track.append(loss*accum_steps)
-                        nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+                        nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                         optimizer.step()
                         scheduler.step()
                         self.model.zero_grad()
                         
                     if j % (3*accum_steps) == 0 :
                         print('loss',loss*accum_steps)
-                        accuracy, precision, recall, f1_score = self.test(model, number = 1024)
+                        accuracy, precision, recall, f1_score = self.test(self.model, number = 1024)
                         accuracies.append(accuracy)
                         precisions.append(precision)
                         recalls.append(recall)
