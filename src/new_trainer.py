@@ -139,8 +139,8 @@ class ClassifTrainer(object):
         self.vocab_loop_counter = 0 ### TO DO : move to the right method
         
         
-        self.loop_over_vocab = args.loop_over_vocab  ### TO DO : Separate per keyword and make it automatic
-        
+        self.loop_over_vocab = args.loop_over_vocab  ### 
+        self.look_for_negative = True
         
         self.label_names_used = {}
 
@@ -1016,7 +1016,7 @@ class ClassifTrainer(object):
             
             # Keep only the ones not in a negative_keyword class if this class has minimum number of texts
             if len(self.negative_keywords) > 250:
-                self.negative_group_exists = True
+                
 
                 if 0 in self.label_name_positivity.values():
                     valid_indices = []
@@ -1038,7 +1038,7 @@ class ClassifTrainer(object):
                 self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
                 torch.save(self.negative_dataset, os.path.join(self.dataset_dir,'negative_dataset.pt'))
             else :
-                self.negative_group_exists = False
+                self.loo = False
        
 
 
@@ -1089,10 +1089,18 @@ class ClassifTrainer(object):
 
 
         ### Negative
+        
+        negative_loader_file = os.path.join(self.dataset_dir, loader_negative)
 
-        self.compute_set_negative()
+        if os.path.exists(negative_loader_file):
+            self.negative_dataset = torch.load(negative_loader_file)
+        elif self.look_for_negative:
+            self.compute_set_negative()
+        else :
+            pass
 
-        if self.negative_group_exists:
+
+        if self.look_for_negative:
         ### CONSTRUCTION OF THE DATALOADER
             data = torch.stack([negative_data[0][:self.max_len] for negative_data in self.negative_dataset] + 
                         [positive_data[0][:self.max_len] for positive_data in self.positive_dataset])
