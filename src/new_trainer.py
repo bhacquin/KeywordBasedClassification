@@ -28,10 +28,36 @@ from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
 from transformers import BertPreTrainedModel, BertModel
 from transformers.modeling_bert import BertOnlyMLMHead    
 import random
-
+from nltk.corpus import wordnet as wn
 ## TO DO : IMPLEMENT THE CASE WHEN NO GROUND TRUTH IS AVAILABLE
 ## TO DO : MULTI GPU
 ## TO DO : MASK KEYWORD
+## TO DO : DO NOT ADD EXTRA CLASS IF NOT ENOUGH DATA POINTS
+
+## UTILITARY FUNCTIONS
+
+def is_adj(word):
+    for ss in wn.synsets(word):
+        if wn.ADJ not in ss.pos():
+            continue
+        else:
+            return True
+    return False
+
+
+def antonyms_for(word):
+    antonyms = set()
+    for ss in wn.synsets(word):
+        
+        for lemma in ss.lemmas():
+            any_pos_antonyms = [ antonym.name() for antonym in lemma.antonyms() ]
+        for antonym in any_pos_antonyms:
+                antonym_synsets = wn.synsets(antonym)
+                if wn.ADJ not in [ ss.pos() for ss in antonym_synsets ]:
+                    continue
+                antonyms.add(antonym)
+    return list(antonyms)
+
 
 ## DEFINITION OF THE MODEL 
 class ClassifModel(BertPreTrainedModel):
@@ -89,11 +115,12 @@ class ClassifTrainer(object):
         self.vocab_size = len(self.vocab)
         self.mask_id = self.vocab[self.tokenizer.mask_token]
         self.inv_vocab = {k:v for v, k in self.vocab.items()}
-        self.read_label_names(args.dataset_dir, args.label_names_file)
+        self.read_label_names(args.dataset_dir, args.label_names_file, check_antonym=True)
         self.num_class = len(self.label_name_dict) + 1 ### Class pointing to each keyword and 1 for the rest assumed negative
         self.num_keywords = len(self.label_name_dict)
-        self.minimum_occurences_per_class = 2500
+        self.minimum_occurences_per_class = 1500
         self.occurences_per_class = self.count_occurences(args.dataset_dir, args.train_file)
+
         self.model = ClassifModel.from_pretrained(self.pretrained_lm,
                                                    output_attentions=False,
                                                    output_hidden_states=False,
@@ -117,10 +144,6 @@ class ClassifTrainer(object):
         self.label_names_used = {}
 
         self.true_label = [int(i) for i in str(args.true_label).split(' ')]
-        self.class_predicted_to_label_dic = {}
-        for n, i in enumerate(self.true_label):
-            self.class_predicted_to_label_dic[i] = n  ### Track all labels if known
-        print(self.class_predicted_to_label_dic)
         print('True Label', self.true_label)
         print('occurences', self.occurences_per_class)
         self.verbose = True
@@ -129,7 +152,7 @@ class ClassifTrainer(object):
 
         #keywords ### TO DO CHECK IF NECESSARY? REPLACE BY self.true_label
         self.positive_keywords = [2]
-        self.negative_keywords = []
+        self.negative_keywords = [] ### you give a keyword that is assign to a negative label
         
         
 
@@ -176,7 +199,7 @@ class ClassifTrainer(object):
             for i in dict_of_keywords:
                 for keyword in self.label_name_dict[i]:
                     occurences_per_class[i] += int(keyword.lower() in doc.lower()[:self.max_len])
-        print(occurences_per_class)
+        print('occurences_per_class',occurences_per_class)
         return occurences_per_class
 
 
@@ -311,13 +334,39 @@ class ClassifTrainer(object):
             self.test_data = self.create_dataset(dataset_dir, test_file, test_label_file, "test.pt", check_exist = check_exist)
 
     # read label names from file
-    def read_label_names(self, dataset_dir, label_name_file, change_positivity_var = True):
+    def read_label_names(self, dataset_dir, label_name_file, change_positivity_var = True, check_antonym = False):
         label_name_file = open(os.path.join(dataset_dir, label_name_file))
         labels_names_and_class = [label_name.split(';') for label_name in label_name_file.readlines()]
-        label_names = [name[0] for name in labels_names_and_class]
+        label_names = [name[0].strip().split(',') for name in labels_names_and_class]
         positive_or_negative = [name[1] for name in labels_names_and_class]
-        print(positive_or_negative)
-        self.label_name_dict = {i: [word.lower() for word in category_words.strip().split(',')] for i, category_words in enumerate(label_names)}
+        all_names = []
+        for i in label_names:
+            all_names += i
+        ### Add antonyms if adj only:
+        if check_antonym:
+            for i,category_words in enumerate(label_names):
+                for keyword in category_words:
+                    opposite_already_here = False
+                    if is_adj(keyword):
+                        antonyms_keyword = antonyms_for(keyword)
+                        for antonym in antonyms_keyword:
+                            if antonym in all_names:
+                                opposite_already_here = True
+                                break
+                        if opposite_already_here:
+                            break
+                   
+                        label_names.append(antonyms_keyword)
+                        if positive_or_negative[i].replace('\n','') == 'positive':
+                            positive_or_negative.append('negative')
+                        else:
+                            positive_or_negative.append('positive')
+                        break
+
+                    
+
+
+        self.label_name_dict = {i: [word.lower() for word in category_words] for i, category_words in enumerate(label_names)}
         label_name_positivity = {i: int((positive.replace('\n','') == 'positive')) for i, positive in enumerate(positive_or_negative)}
         label_name_positivity[len(positive_or_negative)] = 0
         if change_positivity_var:
@@ -474,6 +523,7 @@ class ClassifTrainer(object):
             if len(self.class_to_loop_over) > 0:
                 new_label_names_file = "temporary_label_names.txt"
                 labels_to_write = []
+
                 print('Label name already used', self.label_names_used)
                 for i, cat_dict in self.category_words_freq.items():
                     if i in self.class_to_loop_over:
@@ -481,11 +531,13 @@ class ClassifTrainer(object):
                         new_label_names = sorted(cat_dict.items(), key=lambda item: item[1], reverse=True)  
                         for name, frequency in new_label_names:
                             if self.inv_vocab[name] not in self.label_names_used[i]:
-                                new_label_name = name
-                                self.label_names_used[i].append(self.inv_vocab[new_label_name])
-                                print('new label name', self.inv_vocab[new_label_name], frequency)
-                                print('new label name used :', self.label_names_used)
-                                break
+                                if self.inv_vocab[name] in self.category_vocab[i]:
+                                    new_label_name = name
+                                    self.label_names_used[i].append(self.inv_vocab[new_label_name])
+                                    print('new label name', self.inv_vocab[new_label_name], frequency)
+                                    print('new label name used :', self.label_names_used)
+                                    break
+                    
                     
                         positive_or_negative = 'positive' if self.label_name_positivity[i]==1 else "negative"
                         labels_to_write.append(self.inv_vocab[new_label_name]+';'+positive_or_negative+'\n')
@@ -516,6 +568,7 @@ class ClassifTrainer(object):
     def prepare_mcp_dist(self, rank, top_pred_num=50, match_threshold=25, loader_name="mcp_train.pt"):
         model = self.set_up_dist(rank)
         model.eval()
+        print(len(self.train_data))
         train_dataset_loader = self.make_dataloader(rank, self.train_data, self.eval_batch_size)
         if len(train_dataset_loader.dataset[0]) == 3:
             label_present = True
@@ -550,7 +603,7 @@ class ClassifTrainer(object):
                         valid_doc = torch.sum(valid_idx, dim=-1) > 0
                         if valid_doc.any():
                             mask_label = -1 * torch.ones_like(input_ids)
-                            mask_label[valid_idx] = self.true_label[i]  ## true label = [true_label_keywrd_1, true_label_keyword_2, ...]
+                            mask_label[valid_idx] = i  ## true label = [true_label_keywrd_1, true_label_keyword_2, ...]
                             all_input_ids.append(input_ids[valid_doc].cpu())
                             all_mask_label.append(mask_label[valid_doc].cpu())
                             all_input_mask.append(input_mask[valid_doc].cpu())
@@ -576,7 +629,7 @@ class ClassifTrainer(object):
             self.cuda_mem_error(err, "eval", rank)
 
     # prepare self supervision for masked category prediction
-    def prepare_mcp(self, top_pred_num=50, match_threshold=20, loader_name="mcp_train.pt"):
+    def prepare_mcp(self, top_pred_num=50, match_threshold=25, loader_name="mcp_train.pt"):
         loader_file = os.path.join(self.dataset_dir, loader_name)
         if os.path.exists(loader_file):
             print(f"Loading masked category prediction data from {loader_file}")
@@ -646,12 +699,12 @@ class ClassifTrainer(object):
         df = pd.DataFrame([ground, assumed_label]).T
         df.columns = ['ground','assumed']
         
-        number_of_true_positive = len(df[(df['ground'].isin(positive_label)) & (df['assumed'].isin(positive_label))])
-        number_of_false_positive = len(df[(~df['ground'].isin(positive_label)) & (df['assumed'].isin(positive_label))])
+        number_of_true_positive = len(df[(df['ground'].isin(positive_label)) & (df['assumed'].apply(lambda x: self.label_name_positivity[x]))])
+        number_of_false_positive = len(df[(~df['ground'].isin(positive_label)) & (df['assumed'].apply(lambda x: self.label_name_positivity[x]))])
 
         if len(negative_label) > 0 : 
-            number_of_true_negative = len(df[(df['ground'].isin(negative_label)) & (df['asssumed'].isin(negative_label))])
-            number_of_false_negative = len(df[(~df['ground'].isin(negative_label)) & (df['asssumed'].isin(negative_label))])
+            number_of_true_negative = len(df[(df['ground'].isin(negative_label)) & (df['assumed'].apply(lambda x: self.label_name_positivity[x]==0))])
+            number_of_false_negative = len(df[(~df['ground'].isin(negative_label)) & (df['assumed'].apply(lambda x: self.label_name_positivity[x]==0))])
 
         self.pos_set_accuracy = number_of_true_positive/(number_of_true_positive+number_of_false_positive)
         self.number_elements_pos_set = number_of_true_positive+number_of_false_positive
@@ -727,7 +780,7 @@ class ClassifTrainer(object):
                 logits = model(inputs_test.to(device),attention_mask=attention_test.to(device), pred_mode='classification')
                 logits_cls = logits[:,0]
                 prediction = torch.argmax(logits_cls, -1)
-                
+
                 if binary:
 
                     predictions = torch.tensor([self.label_name_positivity[x.cpu().item()] for x in prediction])
@@ -798,7 +851,7 @@ class ClassifTrainer(object):
 
         return list_all_related_words_tokens, list_all_related_words
 
-    def joint_cate_vocab(self, positive = True, negative = False, topk = 100, min_occurences = 40,
+    def joint_cate_vocab(self, positive = True, negative = False, topk = 100, min_occurences = 20,
                         loader_name='category_vocab.pt', loader_name_freq = 'category_vocab_freq.pt'):
         '''
         The function a joint category vocab(a list of words in string, and their tokenized version) of topk words in the positive, negative or both type of keywords related vocab.
@@ -809,14 +862,15 @@ class ClassifTrainer(object):
 
         new_category_vocab_freq = {i : {j : category_vocab_freq[i][j] for j in category_vocab_freq[i] if 
                                 j in category_vocab[i]} for i in category_vocab_freq}
+        
         df = pd.DataFrame(new_category_vocab_freq).fillna(0)
         if positive :
             if negative :
                 joint_vocab_tokens = list(df.sum(1)[df.sum(1)>min_occurences].sort_values(ascending = False).head(topk).index)
             else :
-                joint_vocab_tokens = list(df[[i for i in df.columns if self.label_name_positivity[i]]].sum(1)[df.sum(1)>min_occurences].sort_values(ascending = False).head(topk).index)
+                joint_vocab_tokens = list(df[[i for i in df.columns if self.label_name_positivity[i]]].sum(1)[df[[i for i in df.columns if self.label_name_positivity[i]]].sum(1)>min_occurences].sort_values(ascending = False).head(topk).index)
         elif negative:
-            joint_vocab_tokens = list(df[[i for i in df.columns if ~self.label_name_positivity[i]]].sum(1)[df.sum(1)>min_occurences].sort_values(ascending = False).head(topk).index)
+            joint_vocab_tokens = list(df[[i for i in df.columns if ~self.label_name_positivity[i]]].sum(1)[df[[i for i in df.columns if ~self.label_name_positivity[i]]].sum(1)>min_occurences].sort_values(ascending = False).head(topk).index)
         else :
             print('Should ask for either positive, negative, or both')
         
@@ -906,6 +960,7 @@ class ClassifTrainer(object):
         self.compute_preset_negative(loader_name=loader_name)
             # self.pre_negative_dataloader = torch.load(loader_file)
         if os.path.exists(os.path.join(self.dataset_dir,'negative_dataset.pt')):
+            print('Loading results')
             self.negative_dataset = torch.load(os.path.join(self.dataset_dir,'negative_dataset.pt'))
         else:
             # Parameters controlling the size of the neg set
@@ -1032,19 +1087,15 @@ class ClassifTrainer(object):
 
         all_labels = self.mcp_data['assumed_labels']
         
-        labels_for_training = torch.stack([torch.tensor(self.class_predicted_to_label_dic[all_labels[i]]) for i in index_select])
-        
+        labels_for_training = torch.stack([torch.tensor(all_labels[i]) for i in index_select])
+        print(labels_for_training)
         self.positive_dataset = torch.utils.data.TensorDataset(inputs_ids, attention_masks, labels_for_training)
-        # self.positive_dataset = torch.utils.data.TensorDataset(mcp_data['input_ids'], mcp_data['attention_masks'], mcp_data['assumed_labels'])
+
 
         ### Negative
-        # negative_loader_file = os.path.join(self.dataset_dir, loader_negative)
+
         self.compute_set_negative()
-        # if os.path.exists(negative_loader_file):
-        #     negative_dataset = torch.load(negative_loader_file)
-        # else:
-        #     self.compute_set_negative()
-        #     negative_dataset = torch.load(negative_loader_file)  
+
         
         ### CONSTRUCTION OF THE DATALOADER
         data = torch.stack([negative_data[0][:200] for negative_data in self.negative_dataset] + 
@@ -1053,8 +1104,6 @@ class ClassifTrainer(object):
         mask = torch.stack([negative_data[1][:200] for negative_data in self.negative_dataset] + 
                     [positive_data[1][:200] for positive_data in self.positive_dataset])
 
-        # target1 = np.hstack((np.zeros(int(len(self.negative_dataset)), dtype=np.int32),
-        #         np.ones(int(len(self.positive_dataset)), dtype=np.int32)))
 
         target = np.hstack(((np.zeros(int(len(self.negative_dataset)), dtype=np.int32)+len(self.label_name_positivity)-1),
                 np.array([keyword_data[2] for keyword_data in self.positive_dataset])))
@@ -1101,9 +1150,7 @@ class ClassifTrainer(object):
             'pos_set_accuracy' : pos_set_accuracy,
             'neg_set' : len(self.negative_dataset),
             'neg_set_accuracy' :neg_set_accuracy,
-            'min occurences' : self.minimum_occurences_per_class,
-            'positive_keywords' : self.positive_keywords,
-            'negative_keywords' : self.negative_keywords}
+            'min occurences' : self.minimum_occurences_per_class}
 
         optimizer = AdamW([{'params' : filter(lambda p: p.requires_grad, model.bert.parameters()), 'lr' : 1e-2*learning_rate}, 
                             {'params' : filter(lambda p: p.requires_grad, model.classifier.parameters()), 'lr' : learning_rate}], eps=1e-8)
@@ -1144,8 +1191,7 @@ class ClassifTrainer(object):
                                 attention_mask=input_mask)
                     ### LOSS
                     logits_cls = logits[:,0]
-                    # print('labels', labels, labels.size())
-                    # print('logits_cls',logits_cls,logits_cls.size())
+
                     loss = train_loss(logits_cls.contiguous().view(-1, self.num_class), labels.contiguous().view(-1)) / accum_steps            
                     total_train_loss += loss.item()
                     loss.backward()

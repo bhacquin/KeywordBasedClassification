@@ -8,9 +8,9 @@ def main():
     parser = argparse.ArgumentParser(description='main',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument('--dataset_dir', default='datasets/agnews/',
+    parser.add_argument('--dataset_dir', default='datasets/imdb/',
                         help='dataset directory')
-    parser.add_argument('--label_names_file', default='label_names_2.txt',
+    parser.add_argument('--label_names_file', default='label_names_1.txt',
                         help='file containing label names (under dataset directory)')
     parser.add_argument('--train_file', default='train.txt',
                         help='unlabeled text corpus for training (under dataset directory); one document per line')
@@ -52,7 +52,7 @@ def main():
                         help='distributed training port id; any number between 10000 and 20000 will work')
     parser.add_argument('--loop_over_vocab', type=int, default=2,
                         help='Number of loop over the category vocabulary in a automatic fashion to refine it.')
-    parser.add_argument("--true_label", type = str, default = "2 3", 
+    parser.add_argument("--true_label", type = str, default = "1", 
                     help=" name of the ground truth labels of interest, must be number of labels separated by a space")
     
 
