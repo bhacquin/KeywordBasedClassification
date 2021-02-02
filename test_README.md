@@ -111,7 +111,7 @@ Politics      | 70            | ?             | ??            |
 To compare with other benchmark
 Model         | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
-Cate          | 85            | ?             | ??            |
+Cate          | 80.5%            | 77.0%             | 84.2%            |
 
 ### DBPedia
 
@@ -127,7 +127,7 @@ artist          | ??            | ?             | ??            |
 
 Keywords      | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
-Good          | ??            | ??            | ??            |
+Good          | 80.5            | ??            | ??            |
 Bad           | ??            | ??            | ??            |
 
 To compare with other benchmark
