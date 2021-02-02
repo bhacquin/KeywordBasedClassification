@@ -235,6 +235,7 @@ class ClassifTrainer(object):
             print(f"Reading texts from {os.path.join(dataset_dir, text_file)}")
             corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
             docs = [doc.strip() for doc in corpus.readlines()]
+            self.train_docs = docs
             print(f"Converting texts into tensors.")
             chunk_size = ceil(len(docs) / self.num_cpus)
             chunks = [docs[x:x+chunk_size] for x in range(0, len(docs), chunk_size)]
@@ -246,6 +247,7 @@ class ClassifTrainer(object):
                 print(f"Reading labels from {os.path.join(dataset_dir, label_file)}")
                 truth = open(os.path.join(dataset_dir, label_file))
                 labels = [int(label.strip()) for label in truth.readlines()]
+                self.docs_labels = labels
                 labels = torch.tensor(labels)
                 data = {"input_ids": input_ids, "attention_masks": attention_masks, "labels": labels}
             else:
@@ -713,22 +715,22 @@ class ClassifTrainer(object):
 
 
 
-        data_vocab = torch.load(os.path.join(self.dataset_dir, "category_vocab.pt"))
-        label_data = torch.load(os.path.join(self.dataset_dir, "label_name_data.pt"))
-        train_data = torch.load(os.path.join(self.dataset_dir, "train.pt"))
+        # data_vocab = torch.load(os.path.join(self.dataset_dir, "category_vocab.pt"))
+        # label_data = torch.load(os.path.join(self.dataset_dir, "label_name_data.pt"))
+        # train_data = torch.load(os.path.join(self.dataset_dir, "train.pt"))
 
-        corpus = open(os.path.join(self.dataset_dir,'train.txt'), encoding="utf-8")
-        true_labels = open(os.path.join(self.dataset_dir,'train_labels.txt'), encoding="utf-8")
-        docs_labels = [int(doc.strip()) for doc in true_labels.readlines()]
-        self.docs_labels = docs_labels
-        dict_label = {0:[], 1:[], 2:[],3:[]}
+        # corpus = open(os.path.join(self.dataset_dir,'train.txt'), encoding="utf-8")
+        # true_labels = open(os.path.join(self.dataset_dir,'train_labels.txt'), encoding="utf-8")
+        # docs_labels = [int(doc.strip()) for doc in true_labels.readlines()]
+        # self.docs_labels = docs_labels
+        # dict_label = {0:[], 1:[], 2:[],3:[]}
 
 
-        for i, label in enumerate(docs_labels):
-            dict_label[int(label)].append(i)
-        docs = [doc.strip() for doc in corpus.readlines()]
+        # for i, label in enumerate(docs_labels):
+        #     dict_label[int(label)].append(i)
+        # docs = [doc.strip() for doc in corpus.readlines()]
 
-        self.train_docs = docs
+        # self.train_docs = docs
 
     def loading_for_test(self, loader_name='train.txt', loader_label_name = 'train_labels.txt'):
         corpus = open(os.path.join(self.dataset_dir,loader_name), encoding="utf-8")
@@ -1015,7 +1017,7 @@ class ClassifTrainer(object):
             self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
             
             # Keep only the ones not in a negative_keyword class if this class has minimum number of texts
-            if len(self.negative_keywords) > 250:
+            if len(self.negative_dataset) > 250:
                 
 
                 if 0 in self.label_name_positivity.values():
