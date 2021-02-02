@@ -530,7 +530,7 @@ class ClassifTrainer(object):
                         new_label_names = sorted(cat_dict.items(), key=lambda item: item[1], reverse=True)  
                         for name, frequency in new_label_names:
                             if self.inv_vocab[name] not in self.label_names_used[i]:
-                                if self.inv_vocab[name] in self.category_vocab[i]:
+                                if name in self.category_vocab[i]:
                                     new_label_name = name
                                     self.label_names_used[i].append(self.inv_vocab[new_label_name])
                                     print('new label name', self.inv_vocab[new_label_name], frequency)
