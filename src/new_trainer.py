@@ -32,6 +32,7 @@ from nltk.corpus import wordnet as wn
 ## TO DO : IMPLEMENT THE CASE WHEN NO GROUND TRUTH IS AVAILABLE
 ## TO DO : MULTI GPU
 ## TO DO : MASK KEYWORD
+
 ## TO DO : DO NOT ADD EXTRA CLASS IF NOT ENOUGH DATA POINTS
 
 ## UTILITARY FUNCTIONS
@@ -118,7 +119,7 @@ class ClassifTrainer(object):
         self.read_label_names(args.dataset_dir, args.label_names_file, check_antonym=True)
         self.num_class = len(self.label_name_dict) + 1 ### Class pointing to each keyword and 1 for the rest assumed negative
         self.num_keywords = len(self.label_name_dict)
-        self.minimum_occurences_per_class = 1500
+        self.minimum_occurences_per_class = 1000
         self.occurences_per_class = self.count_occurences(args.dataset_dir, args.train_file)
 
         self.model = ClassifModel.from_pretrained(self.pretrained_lm,
@@ -359,6 +360,7 @@ class ClassifTrainer(object):
                         label_names.append(antonyms_keyword)
                         if positive_or_negative[i].replace('\n','') == 'positive':
                             positive_or_negative.append('negative')
+
                         else:
                             positive_or_negative.append('positive')
                         break
@@ -408,10 +410,8 @@ class ClassifTrainer(object):
             if len(all_words[word_id]) > 1:
                 repeat_words.append(word_id)
         self.category_vocab = {}
-        # print('sorted_dic', sorted_dicts)
         for i, sorted_dict in sorted_dicts.items():
-            if len(list(sorted_dict.keys()))>0: ### non empty list
-                self.category_vocab[i] = np.array(list(sorted_dict.keys()))
+            self.category_vocab[i] = np.array(list(sorted_dict.keys()))
         stopwords_vocab = stopwords.words('english')
         for i, word_list in self.category_vocab.items():
             delete_idx = []
@@ -424,11 +424,11 @@ class ClassifTrainer(object):
             self.category_vocab[i] = np.delete(self.category_vocab[i], delete_idx)
 
     # construct category vocabulary (distributed function)
-    def category_vocabulary_dist(self, rank, num_keywords , top_pred_num=50, loader_name="category_vocab.pt"):
+    def category_vocabulary_dist(self, rank , top_pred_num=50, loader_name="category_vocab.pt"):
         model = self.set_up_dist(rank)
         model.eval()
         label_name_dataset_loader = self.make_dataloader(rank, self.label_name_data, self.eval_batch_size)
-        category_words_freq = {i: defaultdict(float) for i in range(num_keywords)} ### the -1 comes from the addition of extra "negative" class based on no keyword
+        category_words_freq = {i: defaultdict(float) for i in range(self.num_keywords)} ### the -1 comes from the addition of extra "negative" class based on no keyword
         wrap_label_name_dataset_loader = tqdm(label_name_dataset_loader) if rank == 0 else label_name_dataset_loader
         try:
             for batch in wrap_label_name_dataset_loader:
@@ -452,7 +452,7 @@ class ClassifTrainer(object):
             self.cuda_mem_error(err, "eval", rank)
 
     # construct category vocabulary
-    def category_vocabulary(self, top_pred_num=50, category_vocab_size=100, num_keywords = None, loader_name="category_vocab.pt", loader_freq_name="category_vocab_freq.pt", check_exist = True):
+    def category_vocabulary(self, top_pred_num=50, category_vocab_size=100, loader_name="category_vocab.pt", loader_freq_name="category_vocab_freq.pt", check_exist = True):
         loader_file = os.path.join(self.dataset_dir, loader_name)
         print('GPU AVAILABLE : ', torch.cuda.is_available())
         if os.path.exists(loader_file) and check_exist:
@@ -461,28 +461,27 @@ class ClassifTrainer(object):
             self.category_words_freq = torch.load(os.path.join(self.dataset_dir, loader_freq_name))
         else:
             print("Contructing category vocabulary.")
-            if num_keywords is None:
-                num_keywords = self.num_keywords
+
             if not os.path.exists(self.temp_dir):
                 os.makedirs(self.temp_dir)
-            mp.spawn(self.category_vocabulary_dist, nprocs=self.world_size, args=(top_pred_num,num_keywords, loader_name))
+            mp.spawn(self.category_vocabulary_dist, nprocs=self.world_size, args=(top_pred_num, loader_name))
             gather_res = []
             for f in os.listdir(self.temp_dir):
                 if f[-3:] == '.pt':
                     gather_res.append(torch.load(os.path.join(self.temp_dir, f)))
             assert len(gather_res) == self.world_size, "Number of saved files not equal to number of processes!"
-            self.category_words_freq = {i: defaultdict(float) for i in range(num_keywords)}
-            for i in range(num_keywords):
+            self.category_words_freq = {i: defaultdict(float) for i in range(self.num_keywords)}
+            for i in range(self.num_keywords):
                 for category_words_freq in gather_res:
                     for word_id, freq in category_words_freq[i].items():
                         self.category_words_freq[i][word_id] += freq
 
-            print('loop', self.vocab_loop_counter)
+            print('Loop over cate_vocab :', self.vocab_loop_counter)
 
             if self.vocab_loop_counter == 0:
                 self.old_category_vocab_freq = self.category_words_freq
 
-                for i in range(num_keywords):
+                for i in range(self.num_keywords):
                     self.label_names_used[i] = self.label_name_dict[i]
                 self.vocab_loop_counter += 1
             else:
@@ -503,14 +502,12 @@ class ClassifTrainer(object):
 
                 self.category_words_freq = self.old_category_vocab_freq
                 self.vocab_loop_counter += 1
-            print('self.category_words_freq before filtering ', self.category_words_freq)
             self.label_name_dict = self.label_names_used
             self.filter_keywords(category_vocab_size)
 
 
             if os.path.exists(self.temp_dir):
                 shutil.rmtree(self.temp_dir)
-            print('length', len(self.category_vocab))
             for i, category_vocab in self.category_vocab.items():
 
                 print(f"Class {i} category vocabulary: {[self.inv_vocab[w] for w in category_vocab]}\n")
@@ -527,7 +524,7 @@ class ClassifTrainer(object):
                 print('Label name already used', self.label_names_used)
                 for i, cat_dict in self.category_words_freq.items():
                     if i in self.class_to_loop_over:
-                        print("loop over ", i)
+                        print("Loop over ", i)
                         new_label_names = sorted(cat_dict.items(), key=lambda item: item[1], reverse=True)  
                         for name, frequency in new_label_names:
                             if self.inv_vocab[name] not in self.label_names_used[i]:
@@ -974,7 +971,7 @@ class ClassifTrainer(object):
             topk = 15
             min_similar_words = 0
             max_category_word = 0
-            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 50)
+            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 15)
             print("list_positive_words_tokens",list_positive_words_tokens)
             print('list_positive_words',list_positive_words)
             # Computations
@@ -1020,29 +1017,31 @@ class ClassifTrainer(object):
                 
             self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
             
-            # Keep only the ones not in a negative_keyword class
-            
+            # Keep only the ones not in a negative_keyword class if this class has minimum number of texts
+            if len(self.negative_keywords) > 250:
+                self.negative_group_exists = True
 
+                if 0 in self.label_name_positivity.values():
+                    valid_indices = []
+                    original_length = len(self.negative_dataset)
+                    dataset = torch.load(os.path.join(self.dataset_dir,loader_cate_name))
+                    dataset = dataset['input_ids']
+                    for i, neg in enumerate(self.negative_dataset):
+                        valid = True
+                        for data in dataset:
+                            if (neg[0]==data).all().item():
+                                valid = False
+                                break
+                        if valid:
+                            valid_indices.append(i)
 
-            if 0 in self.label_name_positivity.values():
-                valid_indices = []
-                original_length = len(self.negative_dataset)
-                dataset = torch.load(os.path.join(self.dataset_dir,loader_cate_name))
-                dataset = dataset['input_ids']
-                for i, neg in enumerate(self.negative_dataset):
-                    valid = True
-                    for data in dataset:
-                        if (neg[0]==data).all().item():
-                            valid = False
-                            break
-                    if valid:
-                        valid_indices.append(i)
-
-                self.negative_dataset = Subset(self.negative_dataset, valid_indices)
-            print("Difference after intersection reduction :", original_length - len(self.negative_dataset))
-            #EXPORT THE DATASET 
-            self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
-            torch.save(self.negative_dataset, os.path.join(self.dataset_dir,'negative_dataset.pt'))
+                    self.negative_dataset = Subset(self.negative_dataset, valid_indices)
+                print("Difference after intersection reduction :", original_length - len(self.negative_dataset))
+                #EXPORT THE DATASET 
+                self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
+                torch.save(self.negative_dataset, os.path.join(self.dataset_dir,'negative_dataset.pt'))
+            else :
+                self.negative_group_exists = False
        
 
 
@@ -1096,20 +1095,42 @@ class ClassifTrainer(object):
 
         self.compute_set_negative()
 
-        
+        if self.negative_group_exists:
         ### CONSTRUCTION OF THE DATALOADER
-        data = torch.stack([negative_data[0][:200] for negative_data in self.negative_dataset] + 
-                    [positive_data[0][:200] for positive_data in self.positive_dataset])
-        ### New negative class always the last class
-        mask = torch.stack([negative_data[1][:200] for negative_data in self.negative_dataset] + 
-                    [positive_data[1][:200] for positive_data in self.positive_dataset])
+            data = torch.stack([negative_data[0][:self.max_len] for negative_data in self.negative_dataset] + 
+                        [positive_data[0][:self.max_len] for positive_data in self.positive_dataset])
+            ### New negative class always the last class
+            mask = torch.stack([negative_data[1][:self.max_len] for negative_data in self.negative_dataset] + 
+                        [positive_data[1][:self.max_len] for positive_data in self.positive_dataset])
 
 
-        target = np.hstack(((np.zeros(int(len(self.negative_dataset)), dtype=np.int32)+len(self.label_name_positivity)-1),
-                np.array([keyword_data[2] for keyword_data in self.positive_dataset])))
+            target = np.hstack(((np.zeros(int(len(self.negative_dataset)), dtype=np.int32)+len(self.label_name_positivity)-1),
+                    np.array([keyword_data[2] for keyword_data in self.positive_dataset])))
 
 
-        target = torch.from_numpy(np.expand_dims(target, 1)).long()
+            target = torch.from_numpy(np.expand_dims(target, 1)).long()
+
+
+        else:
+        ### CONSTRUCTION OF THE DATALOADER
+            data = torch.stack([positive_data[0][:self.max_len] for positive_data in self.positive_dataset])
+            ### New negative class always the last class
+            mask = torch.stack([positive_data[1][:self.max_len] for positive_data in self.positive_dataset])
+
+
+            target = np.array([keyword_data[2] for keyword_data in self.positive_dataset])
+            labels_present = []
+            for i in np.unique(target):
+                labels_present.append(self.label_name_positivity[i])
+            assert((1 in labels_present) and (0 in labels_present))
+            target = torch.from_numpy(np.expand_dims(target, 1)).long()
+
+            ## Redefine the model with one fewer outcome
+            self.model = ClassifModel.from_pretrained(self.pretrained_lm,
+                                                   output_attentions=False,
+                                                   output_hidden_states=False,
+                                                   num_labels=self.num_class-1) 
+
 
         train_dataset = torch.utils.data.TensorDataset(data,mask, target)
         ### Construction of the weighted sampler based on sets' sizes and of the target vector #########
@@ -1127,6 +1148,7 @@ class ClassifTrainer(object):
         else:
 
             train_loader = DataLoader(train_dataset, batch_size = batch_size, shuffle=True)
+
 
 
         ### TRAINING HYPERPARAMETERS AND PARAMETERS

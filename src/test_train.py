@@ -34,7 +34,7 @@ def main():
                         help='category vocabulary size for each class')
     parser.add_argument('--match_threshold', type=int, default=20,
                         help='category indicative words matching threshold')
-    parser.add_argument('--max_len', type=int, default=200,
+    parser.add_argument('--max_len', type=int, default=512,
                         help='length that documents are padded/truncated to')
     parser.add_argument('--update_interval', type=int, default=50,
                         help='self training update interval; 50 is good in general')
@@ -69,8 +69,7 @@ def main():
     trainer.prepare_mcp(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
 
     ##test
-    trainer.add_positive_keyword('business')
-    trainer.add_positive_keyword('technology')
+
     trainer.training_set_statistics()
     trainer.compute_preset_negative()
     trainer.compute_set_negative()

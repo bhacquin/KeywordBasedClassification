@@ -46,7 +46,7 @@ def main():
                         help='self training epochs; 1-5 usually is good depending on dataset size (smaller dataset needs more epochs)')
     parser.add_argument('--early_stop', action='store_true',
                         help='whether or not to enable early stop of self-training')
-    parser.add_argument('--gpus', default=3, type=int,
+    parser.add_argument('--gpus', default=1, type=int,
                         help='number of gpus to use')
     parser.add_argument('--dist_port', type=int, default=12345,
                         help='distributed training port id; any number between 10000 and 20000 will work')
@@ -61,7 +61,7 @@ def main():
     print('args',args)
     trainer = LOTClassTrainer(args)
     # Construct category vocabulary
-    # trainer.category_vocabulary(top_pred_num=args.top_pred_num, category_vocab_size=args.category_vocab_size)
+    trainer.category_vocabulary(top_pred_num=args.top_pred_num, category_vocab_size=args.category_vocab_size)
     # Construct positive class
     # trainer.prepare_mcp(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
     # Training with masked category prediction

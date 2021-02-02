@@ -65,7 +65,7 @@ class LOTClassTrainer(object):
         self.loop_over_vocab = args.loop_over_vocab
         self.label_names_used = {}
         
-        self.ground_truth = args.ground_truth_available
+        
         
     # set up distributed training
     def set_up_dist(self, rank):
@@ -316,9 +316,11 @@ class LOTClassTrainer(object):
                 for category_words_freq in gather_res:
                     for word_id, freq in category_words_freq[i].items():
                         self.category_words_freq[i][word_id] += freq
+
             print('loop', self.vocab_loop_counter)
             if self.vocab_loop_counter == 0:
                 self.old_category_vocab_freq = self.category_words_freq
+                
                 for i in range(self.num_class):
                     self.label_names_used[i] = []
                 self.vocab_loop_counter += 1
@@ -335,18 +337,6 @@ class LOTClassTrainer(object):
 
             self.filter_keywords(category_vocab_size) ### BE CAREFUL THIS FUNCTION SETS, self.category_vocab
 
-            #### HUMAN IN THE LOOP PART
-            # new_category_vocab = {}
-            # for i, category_vocab in self.category_vocab.items():
-            #     temp_category_vocab = []
-            #     for j, w in enumerate(category_vocab):
-            #         if w in self.non_accepted_words:
-            #             continue
-            #         else:
-            #             temp_category_vocab.append(w)
-            #     new_category_vocab[i] = np.array(temp_category_vocab)
-            # self.category_vocab = new_category_vocab
-            #### END OF THE HUMAN INVOLVEMENT
 
 
             if os.path.exists(self.temp_dir):
