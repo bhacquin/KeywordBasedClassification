@@ -161,13 +161,20 @@ The ```train.py``` has a number of hyperparameters that can be tuned. There are 
 #### Step by Step
 ##### Instanciation
 ``` python
-trainer = ClassifTrainer()
+trainer = ClassifTrainer(args)
 ```
+This line instantiates the trainer with all the parameters provided or the default ones.
+At this point, the keywords are read, their numbers of occurences in the dataset have been tracked. If keywords are adjectives they have also potentially been increased to their antonyms if those where not provided as other keywords.
+The data has also already been encoded using the Language Model Tokenizer into pytorch tensors.
+
 ### 'Category Vocabulary per Keyword'
 ```python
-trainer.category_vocab()
+trainer.category_vocab(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
 ```
-This method creates one category vocabulary per keyword in order to use it later.
+This method creates one category vocabulary per keyword in order to use it later. So it takes the set of keywords defined at instanciation and build a set of similar words (context-based), namely words that are likely to replace the keywords accross the dataset. 
+
+In case on of the keyword for instance is hardly present in the dataset, this set of similar words will be refined by running the algorithm on the most similar word to the keyword as a refinement step.
+Say, 'tech' is the keyword, in the set of similar words 'technology' comes first, then the set will be refined using 'technology' as a keyword
 
 ## Running on new datasets
 
