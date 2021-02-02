@@ -971,8 +971,6 @@ class ClassifTrainer(object):
             min_similar_words = 0
             max_category_word = 0
             list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 15)
-            print("list_positive_words_tokens",list_positive_words_tokens)
-            print('list_positive_words',list_positive_words)
             # Computations
             with torch.no_grad():
                 for k, batch in tqdm(enumerate(self.pre_negative_dataloader)):
@@ -1123,12 +1121,12 @@ class ClassifTrainer(object):
                 labels_present.append(self.label_name_positivity[i])
             assert((1 in labels_present) and (0 in labels_present))
             target = torch.from_numpy(np.expand_dims(target, 1)).long()
-
+            self.num_class = self.num_class -1
             ## Redefine the model with one fewer outcome
             self.model = ClassifModel.from_pretrained(self.pretrained_lm,
                                                    output_attentions=False,
                                                    output_hidden_states=False,
-                                                   num_labels=self.num_class-1).to(device)
+                                                   num_labels=self.num_class).to(device)
             model = self.model
 
         train_dataset = torch.utils.data.TensorDataset(data,mask, target)
@@ -1212,7 +1210,6 @@ class ClassifTrainer(object):
                                 attention_mask=input_mask)
                     ### LOSS
                     logits_cls = logits[:,0]
-
                     loss = train_loss(logits_cls.contiguous().view(-1, self.num_class), labels.contiguous().view(-1)) / accum_steps            
                     total_train_loss += loss.item()
                     loss.backward()
