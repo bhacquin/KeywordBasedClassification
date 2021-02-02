@@ -554,7 +554,7 @@ class ClassifTrainer(object):
                 for i, class_idx in enumerate(self.class_to_loop_over):
                     self.occurences_per_class[class_idx] += new_occurences[i]
                 print('occurences', self.occurences_per_class)
-                self.category_vocabulary(check_exist = False,num_keywords = len(self.class_to_loop_over))
+                self.category_vocabulary(check_exist = False)
             try :
                 os.remove(os.path.join(self.dataset_dir, "temporary_label_names.txt"))
             except:
