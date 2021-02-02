@@ -111,7 +111,7 @@ Politics      | 70            | ?             | ??            |
 To compare with other benchmark
 Model         | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
-Cate          | 80.5%            | 77.0%             | 84.2%            |
+Cate          | ??            | ??            |     ??        |
 
 ### DBPedia
 
@@ -127,7 +127,7 @@ artist          | ??            | ?             | ??            |
 
 Keywords      | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
-Good          | 80.5            | ??            | ??            |
+Good          | 80.5            | 77.0%            | 84.2%            |
 Bad           | ??            | ??            | ??            |
 
 To compare with other benchmark
@@ -167,7 +167,7 @@ This line instantiates the trainer with all the parameters provided or the defau
 At this point, the keywords are read, their numbers of occurences in the dataset have been tracked. If keywords are adjectives they have also potentially been increased to their antonyms if those where not provided as other keywords.
 The data has also already been encoded using the Language Model Tokenizer into pytorch tensors.
 
-### 'Category Vocabulary per Keyword'
+#### 'Category Vocabulary per Keyword'
 ```python
 trainer.category_vocab(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
 ```
@@ -175,6 +175,49 @@ This method creates one category vocabulary per keyword in order to use it later
 
 In case on of the keyword for instance is hardly present in the dataset, this set of similar words will be refined by running the algorithm on the most similar word to the keyword as a refinement step.
 Say, 'tech' is the keyword, in the set of similar words 'technology' comes first, then the set will be refined using 'technology' as a keyword
+
+
+#### Weak Automatic Labelling using LMs
+```python
+trainer.prepare_mcp(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
+```
+This method will automatically labels a few of the texts in the dataset based on the category vocabulary built before and on the Language Model chosen. 
+
+Subsets of the dataset are constructed out of the texts the most likely to be related to the keywords provided, likelihood being assesed with the category built before.
+
+As a result, the method builds a subset of the full dataset with noisy labels.
+
+#### Statistics on the precision of those subsets
+```python
+trainer.training_set_statistics()
+```
+This methods analyses the previously built subset of the dataset and its noisy labels. It computes the accuracy of the supposed positive sets, and supposed negative sets regarding the ground true labels.
+
+
+#### Computes set of negative examples
+```python
+trainer.compute_preset_negative()
+```
+This returns a set of texts with no occurence of any word related to a positive keyword.
+
+```python
+trainer.compute_set_negative()
+```
+Out of the set of likely negative texts just built before, this method selects the most likely ones to be negative using the LM.
+The idea is to retrieve texts that neither the positive keywords nor the negative keywords may cover. 
+In case the number of texts thus retrieved is too small, then this is simply dropped.
+
+#### Training
+```python
+trainer.train()
+```
+Train the models on the noisy sets builts before using Gradient Descent.
+
+#### Self Training
+```python
+trainer.self_train(epochs=args.self_train_epochs, loader_name=args.final_model)
+```
+The method refines the model on the whole dataset this time by using the most 'confident' predictions of the trained model (strecthing predictions either to 1 or 0).
 
 ## Running on new datasets
 
