@@ -1190,7 +1190,7 @@ class ClassifTrainer(object):
 
         accum_steps = accum_steps
         epochs = epochs
-        learning_rate = 5e-5
+        learning_rate = 1e-4
         train_loss = nn.CrossEntropyLoss()
         total_steps = len(train_loader) * epochs / accum_steps
         number_of_mask = 2
@@ -1209,9 +1209,8 @@ class ClassifTrainer(object):
             'neg_set_accuracy' :neg_set_accuracy,
             'min occurences' : self.minimum_occurences_per_class}
 
-        optimizer = AdamW([{'params' : filter(lambda p: p.requires_grad, self.model.bert.parameters()), 'lr' : 1e-2*learning_rate}, 
+        optimizer = AdamW([{'params' : filter(lambda p: p.requires_grad, self.model.bert.parameters()), 'lr' : 0.5e-1*learning_rate}, 
                             {'params' : filter(lambda p: p.requires_grad, self.model.classifier.parameters()), 'lr' : learning_rate}], eps=1e-8)
-        # optimizer = AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, eps=1e-8)
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0.1*total_steps, num_training_steps=total_steps)
 
 
