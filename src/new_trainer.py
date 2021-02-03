@@ -127,7 +127,7 @@ class ClassifTrainer(object):
                                                    output_hidden_states=False,
                                                    num_labels=self.num_class) 
         self.with_train_label = True if args.train_label_file is not None else False
-
+        self.train_text_file = args.train_file
         self.read_data(args.dataset_dir, args.train_file,args.train_label_file, args.test_file, args.test_label_file)
         self.with_test_label = True if args.test_label_file is not None else False ### bizarre
         self.temp_dir = f'tmp_{self.dist_port}'
@@ -895,10 +895,11 @@ class ClassifTrainer(object):
             if docs is None:
                 try:
                     docs = self.train_docs
-                except:
-                    corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
+                except AttributeError:
+                    corpus = open(os.path.join(self.dataset_dir, self.train_text_file), encoding="utf-8")
                     docs = [doc.strip() for doc in corpus.readlines()]
                     self.train_docs = docs
+                docs = self.train_docs
             if verbose is None:
                 verbose = self.verbose
             ### Selecting texts without positive keywords
