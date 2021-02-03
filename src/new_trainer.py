@@ -893,7 +893,12 @@ class ClassifTrainer(object):
 
             list_all_positive_words_tokens, list_all_positive_words = self.joint_cate_vocab(positive = True, negative = False, min_occurences=150)
             if docs is None:
-                docs = self.train_docs
+                try:
+                    docs = self.train_docs
+                except:
+                    corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
+                    docs = [doc.strip() for doc in corpus.readlines()]
+                    self.train_docs = docs
             if verbose is None:
                 verbose = self.verbose
             ### Selecting texts without positive keywords
