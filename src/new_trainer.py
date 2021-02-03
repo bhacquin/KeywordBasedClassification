@@ -943,8 +943,8 @@ class ClassifTrainer(object):
             torch.save(self.pre_negative_dataloader,os.path.join(self.dataset_dir,loader_name))
         
 
-    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 20, min_similar_words = 0,
-                                max_category_word = 1, verbose = None, device = None, 
+    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 10, min_similar_words = 1,
+                                max_category_word = 0, verbose = None, device = None, 
                                 loader_name = 'pre_negative_dataloader.pt', loader_cate_name='mcp_train.pt'):
 
         print('Compute Negative Training Set')
@@ -975,7 +975,7 @@ class ClassifTrainer(object):
             topk = topk
             min_similar_words = min_similar_words
             max_category_word = max_category_word
-            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 100)
+            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 350)
             print('list_positive_words',list_positive_words)
             # Computations
             with torch.no_grad():
