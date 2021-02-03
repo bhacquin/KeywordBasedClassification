@@ -140,8 +140,7 @@ class ClassifTrainer(object):
         
         
         self.loop_over_vocab = args.loop_over_vocab  ### 
-        self.look_for_negative = True
-        
+        self.dont_include_neg_class = False
         self.label_names_used = {}
 
         self.true_label = [int(i) for i in str(args.true_label).split(' ')]
@@ -728,23 +727,6 @@ class ClassifTrainer(object):
 
 
 
-        # data_vocab = torch.load(os.path.join(self.dataset_dir, "category_vocab.pt"))
-        # label_data = torch.load(os.path.join(self.dataset_dir, "label_name_data.pt"))
-        # train_data = torch.load(os.path.join(self.dataset_dir, "train.pt"))
-
-        # corpus = open(os.path.join(self.dataset_dir,'train.txt'), encoding="utf-8")
-        # true_labels = open(os.path.join(self.dataset_dir,'train_labels.txt'), encoding="utf-8")
-        # docs_labels = [int(doc.strip()) for doc in true_labels.readlines()]
-        # self.docs_labels = docs_labels
-        # dict_label = {0:[], 1:[], 2:[],3:[]}
-
-
-        # for i, label in enumerate(docs_labels):
-        #     dict_label[int(label)].append(i)
-        # docs = [doc.strip() for doc in corpus.readlines()]
-
-        # self.train_docs = docs
-
     def loading_for_test(self, loader_name='train.txt', loader_label_name = 'train_labels.txt'):
         corpus = open(os.path.join(self.dataset_dir,loader_name), encoding="utf-8")
         docs = [doc.strip() for doc in corpus.readlines()]
@@ -1042,7 +1024,7 @@ class ClassifTrainer(object):
             # Keep only the ones not in a negative_keyword class if this class has minimum number of texts
             if len(self.negative_dataset) > 250:
                 
-
+                ### Remove the intersection with Keyword-related texts (if some keywords are negative)
                 if 0 in self.label_name_positivity.values():
                     valid_indices = []
                     original_length = len(self.negative_dataset)
@@ -1061,10 +1043,12 @@ class ClassifTrainer(object):
                 print("Difference after intersection reduction :", original_length - len(self.negative_dataset))
                 #EXPORT THE DATASET 
                 self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
-                torch.save(self.negative_dataset, os.path.join(self.dataset_dir,'negative_dataset.pt'))
+                if len(self.negative_dataset) < 150:
+                    self.dont_include_neg_class = True
+                else:
+                    torch.save(self.negative_dataset, os.path.join(self.dataset_dir,'negative_dataset.pt'))
             else :
                 self.negative_dataset = self.pre_negative_dataloader.dataset
-                self.look_for_negative = False
        
 
 
@@ -1120,29 +1104,14 @@ class ClassifTrainer(object):
 
         if os.path.exists(negative_loader_file):
             self.negative_dataset = torch.load(negative_loader_file)
-        elif self.look_for_negative:
-            self.compute_set_negative()
-        else :
+        elif self.dont_include_neg_class:
             pass
+        else:
+            self.compute_set_negative()
 
 
-        if (self.look_for_negative) or (0 not in self.label_name_positivity.values()):
-        ### CONSTRUCTION OF THE DATALOADER
-            data = torch.stack([negative_data[0][:self.max_len] for negative_data in self.negative_dataset] + 
-                        [positive_data[0][:self.max_len] for positive_data in self.positive_dataset])
-            ### New negative class always the last class
-            mask = torch.stack([negative_data[1][:self.max_len] for negative_data in self.negative_dataset] + 
-                        [positive_data[1][:self.max_len] for positive_data in self.positive_dataset])
 
-
-            target = np.hstack(((np.zeros(int(len(self.negative_dataset)), dtype=np.int32)+len(self.label_name_positivity)-1),
-                    np.array([keyword_data[2] for keyword_data in self.positive_dataset])))
-
-
-            target = torch.from_numpy(np.expand_dims(target, 1)).long()
-
-
-        else: ### in case the negative set construction hasnt been great and there is already negative keyword then just base everything on keyword
+        if self.dont_include_neg_class: ### in case the negative set construction hasnt been great and there is already negative keyword then just base everything on keyword
         ### CONSTRUCTION OF THE DATALOADER
             data = torch.stack([positive_data[0][:self.max_len] for positive_data in self.positive_dataset])
             ### New negative class always the last class
@@ -1162,6 +1131,22 @@ class ClassifTrainer(object):
                                                    output_hidden_states=False,
                                                    num_labels=self.num_class).to(device)
             model = self.model
+
+
+        else:
+                   
+            data = torch.stack([negative_data[0][:self.max_len] for negative_data in self.negative_dataset] + 
+                        [positive_data[0][:self.max_len] for positive_data in self.positive_dataset])
+            ### New negative class always the last class
+            mask = torch.stack([negative_data[1][:self.max_len] for negative_data in self.negative_dataset] + 
+                        [positive_data[1][:self.max_len] for positive_data in self.positive_dataset])
+
+
+            target = np.hstack(((np.zeros(int(len(self.negative_dataset)), dtype=np.int32)+len(self.label_name_positivity)-1),
+                    np.array([keyword_data[2] for keyword_data in self.positive_dataset])))
+
+
+            target = torch.from_numpy(np.expand_dims(target, 1)).long()
 
         train_dataset = torch.utils.data.TensorDataset(data,mask, target)
         ### Construction of the weighted sampler based on sets' sizes and of the target vector #########
