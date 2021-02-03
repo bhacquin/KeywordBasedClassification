@@ -943,7 +943,7 @@ class ClassifTrainer(object):
             torch.save(self.pre_negative_dataloader,os.path.join(self.dataset_dir,loader_name))
         
 
-    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 20, min_similar_words = 1,
+    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 10, min_similar_words = 0,
                                 max_category_word = 0, verbose = None, device = None, 
                                 loader_name = 'pre_negative_dataloader.pt', loader_cate_name='mcp_train.pt'):
 
@@ -1022,7 +1022,7 @@ class ClassifTrainer(object):
             self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
             
             # Keep only the ones not in a negative_keyword class if this class has minimum number of texts
-            if len(self.negative_dataset) > 250:
+            if len(self.negative_dataset) > 1000:
                 
                 ### Remove the intersection with Keyword-related texts (if some keywords are negative)
                 if 0 in self.label_name_positivity.values():
