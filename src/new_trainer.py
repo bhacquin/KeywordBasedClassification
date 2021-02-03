@@ -891,7 +891,7 @@ class ClassifTrainer(object):
             negative_doc=[]
             negative_doc_label = []
 
-            list_all_positive_words_tokens, list_all_positive_words = self.joint_cate_vocab(positive = True, negative = False, min_occurences=100)
+            list_all_positive_words_tokens, list_all_positive_words = self.joint_cate_vocab(positive = True, negative = False, min_occurences=150)
             if docs is None:
                 docs = self.train_docs
             if verbose is None:
@@ -978,7 +978,7 @@ class ClassifTrainer(object):
             topk = topk
             min_similar_words = min_similar_words
             max_category_word = max_category_word
-            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 40)
+            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 100)
             print('list_positive_words',list_positive_words)
             # Computations
             with torch.no_grad():
@@ -1048,6 +1048,7 @@ class ClassifTrainer(object):
                 self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
                 torch.save(self.negative_dataset, os.path.join(self.dataset_dir,'negative_dataset.pt'))
             else :
+                self.negative_dataset = self.pre_negative_dataloader.dataset
                 self.look_for_negative = False
        
 
@@ -1126,7 +1127,7 @@ class ClassifTrainer(object):
             target = torch.from_numpy(np.expand_dims(target, 1)).long()
 
 
-        else:
+        else: ### in case the negative set construction hasnt been great and there is already negative keyword then just base everything on keyword
         ### CONSTRUCTION OF THE DATALOADER
             data = torch.stack([positive_data[0][:self.max_len] for positive_data in self.positive_dataset])
             ### New negative class always the last class
