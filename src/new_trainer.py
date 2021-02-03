@@ -1053,7 +1053,26 @@ class ClassifTrainer(object):
 
 
     def train(self, model = None, batch_size = None, accum_steps = 8, epochs = 3, loader_positive = 'mcp_train.pt', 
-                loader_negative = 'negative_dataset.pt',weighted_sampler = True,  device = None):
+                loader_negative = 'negative_dataset.pt',weighted_sampler = True,  device = None, model_loader = 'model.pt'):
+
+
+        model_loader_file = os.path.join(self.dataset_dir,'model.pt')
+        if os.path.exists(model_loader_file):
+            print('Loading model from previous training....')
+
+            try:
+                self.model.load_state_dict(torch.load(loader_file))
+            except:
+                self.num_class = self.num_class -1
+            ## Redefine the model with one fewer outcome
+                self.model = ClassifModel.from_pretrained(self.pretrained_lm,
+                                                   output_attentions=False,
+                                                   output_hidden_states=False,
+                                                   num_labels=self.num_class).to(device)
+                self.model.load_state_dict(torch.load(loader_file))
+
+            return
+
         print('Training ...')
 
         if model is None:
