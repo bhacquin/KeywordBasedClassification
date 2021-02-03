@@ -943,7 +943,7 @@ class ClassifTrainer(object):
             torch.save(self.pre_negative_dataloader,os.path.join(self.dataset_dir,loader_name))
         
 
-    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 10, min_similar_words = 1,
+    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 20, min_similar_words = 1,
                                 max_category_word = 0, verbose = None, device = None, 
                                 loader_name = 'pre_negative_dataloader.pt', loader_cate_name='mcp_train.pt'):
 
@@ -975,7 +975,7 @@ class ClassifTrainer(object):
             topk = topk
             min_similar_words = min_similar_words
             max_category_word = max_category_word
-            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 350)
+            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 300)
             print('list_positive_words',list_positive_words)
             # Computations
             with torch.no_grad():
@@ -1061,7 +1061,7 @@ class ClassifTrainer(object):
             print('Loading model from previous training....')
 
             try:
-                self.model.load_state_dict(torch.load(loader_file))
+                self.model.load_state_dict(torch.load(model_loader_file))
             except:
                 self.num_class = self.num_class -1
             ## Redefine the model with one fewer outcome
@@ -1069,7 +1069,7 @@ class ClassifTrainer(object):
                                                    output_attentions=False,
                                                    output_hidden_states=False,
                                                    num_labels=self.num_class).to(device)
-                self.model.load_state_dict(torch.load(loader_file))
+                self.model.load_state_dict(torch.load(model_loader_file))
 
             return
 
