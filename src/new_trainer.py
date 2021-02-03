@@ -490,6 +490,7 @@ class ClassifTrainer(object):
                 
                 #### we enter the second loop and needs to average result
                 ### But we only run loop over class in self.class_to_loop_over
+
                 for i in self.old_category_vocab_freq:
                     if i in self.class_to_loop_over:
                         j = self.class_to_loop_over.index(i)
@@ -501,8 +502,8 @@ class ClassifTrainer(object):
                             if word_id not in self.old_category_vocab_freq[i].items():
                                 self.old_category_vocab_freq[i][word_id] = self.category_words_freq[j][word_id]
 
-
                 self.category_words_freq = self.old_category_vocab_freq
+                
                 self.vocab_loop_counter += 1
             self.label_name_dict = self.label_names_used
             self.filter_keywords(category_vocab_size)
@@ -890,7 +891,7 @@ class ClassifTrainer(object):
             negative_doc=[]
             negative_doc_label = []
 
-            list_all_positive_words_tokens, list_all_positive_words = self.return_all_keywords_related_vocab(positive = True, negative = False)
+            list_all_positive_words_tokens, list_all_positive_words = self.joint_cate_vocab(positive = True, negative = False, min_occurences=100)
             if docs is None:
                 docs = self.train_docs
             if verbose is None:
@@ -945,8 +946,8 @@ class ClassifTrainer(object):
             torch.save(self.pre_negative_dataloader,os.path.join(self.dataset_dir,loader_name))
         
 
-    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 15, min_similar_words = 0,
-                                max_category_word =0, verbose = None, device = None, 
+    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 20, min_similar_words = 0,
+                                max_category_word = 1, verbose = None, device = None, 
                                 loader_name = 'pre_negative_dataloader.pt', loader_cate_name='mcp_train.pt'):
 
         print('Compute Negative Training Set')
@@ -971,11 +972,14 @@ class ClassifTrainer(object):
             verified_negative = []
             ground_label = []
             correct_label = 0
-            verbose = True
-            topk = 15
-            min_similar_words = 0
-            max_category_word = 0
-            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 15)
+            if verbose is None:
+                verbose = self.verbose
+            
+            topk = topk
+            min_similar_words = min_similar_words
+            max_category_word = max_category_word
+            list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 40)
+            print('list_positive_words',list_positive_words)
             # Computations
             with torch.no_grad():
                 for k, batch in tqdm(enumerate(self.pre_negative_dataloader)):
@@ -1044,7 +1048,7 @@ class ClassifTrainer(object):
                 self.negative_dataset = Subset(self.pre_negative_dataloader.dataset, verified_negative)
                 torch.save(self.negative_dataset, os.path.join(self.dataset_dir,'negative_dataset.pt'))
             else :
-                self.loo = False
+                self.look_for_negative = False
        
 
 
@@ -1106,7 +1110,7 @@ class ClassifTrainer(object):
             pass
 
 
-        if self.look_for_negative:
+        if (self.look_for_negative) or (0 not in self.label_name_positivity.values()):
         ### CONSTRUCTION OF THE DATALOADER
             data = torch.stack([negative_data[0][:self.max_len] for negative_data in self.negative_dataset] + 
                         [positive_data[0][:self.max_len] for positive_data in self.positive_dataset])
