@@ -231,6 +231,15 @@ class ClassifTrainer(object):
         if os.path.exists(loader_file) and check_exist:
             print(f"Loading encoded texts from {loader_file}")
             data = torch.load(loader_file)
+            print('Defining self.train_docs')
+            corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
+            docs = [doc.strip() for doc in corpus.readlines()]
+            self.train_docs = docs
+            if label_file is not None:
+                print(f"Reading labels from {os.path.join(dataset_dir, label_file)}")
+                truth = open(os.path.join(dataset_dir, label_file))
+                labels = [int(label.strip()) for label in truth.readlines()]
+                self.docs_labels = labels
         else:
             print(f"Reading texts from {os.path.join(dataset_dir, text_file)}")
             corpus = open(os.path.join(dataset_dir, text_file), encoding="utf-8")
