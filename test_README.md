@@ -104,9 +104,9 @@ Here we take as an hypothesis that one is looking for a combination of the known
 Keywords      | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
 Sport         | 85            | ?             | ??            |
-Politics      | 70            | ?             | ??            |
+Politics      | 75            | 66.5             | 88.5            |
 {Business, Technology}  | 92%  |  ??          | ??            |
-{Politics, Business, Technology}  |   ??   |  ??     |    ??     |
+{Politics, Business, Technology}  |   90.7%   |  98.6%     |    84%     |
 
 To compare with other benchmark
 Model         | F1 - score    |    Precision  |     Recall    |  
