@@ -117,7 +117,7 @@ Cate          | ??            | ??            |     ??        |
 
 Keywords      | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
-athlete         | ??            | ?             | ??            |
+athlete         | 22%            | ?             | ??            |
 artist          | ??            | ?             | ??            |
 {tree, river}   |    ??        |    ??          | ??            |
 {river, mountain, hill}  |   ??   |  ??     |    ??     |
