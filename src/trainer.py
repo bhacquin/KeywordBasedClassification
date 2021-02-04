@@ -936,7 +936,7 @@ class ClassifTrainer(object):
             mask_tensor = torch.stack(masks_list).squeeze()
             label_tensor = torch.stack([torch.tensor(i).unsqueeze(0) for i in negative_doc_label])
             dataset = torch.utils.data.TensorDataset(input_tensor,mask_tensor, label_tensor)
-            dataloader = torch.utils.data.DataLoader(dataset, shuffle = False, batch_size = 8)
+            dataloader = torch.utils.data.DataLoader(dataset, shuffle = True, batch_size = self.eval_batch_size)
             self.pre_negative_dataset = dataset
             self.pre_negative_dataloader = dataloader
 
@@ -1114,7 +1114,7 @@ class ClassifTrainer(object):
         all_labels = self.mcp_data['assumed_labels']
         
         labels_for_training = torch.stack([torch.tensor(all_labels[i]) for i in index_select])
-        print(labels_for_training)
+        
         self.positive_dataset = torch.utils.data.TensorDataset(inputs_ids, attention_masks, labels_for_training)
 
 
@@ -1129,6 +1129,7 @@ class ClassifTrainer(object):
         else:
             self.compute_set_negative()
 
+        print('Number of negative elements',len(self.negative_dataset))
 
 
         if self.dont_include_neg_class: ### in case the negative set construction hasnt been great and there is already negative keyword then just base everything on keyword
@@ -1250,9 +1251,9 @@ class ClassifTrainer(object):
                     logits_cls = logits[:,0]
                     loss = train_loss(logits_cls.contiguous().view(-1, self.num_class), labels.contiguous().view(-1)) / accum_steps            
                     total_train_loss += loss.item()
-                    if loss*accum_steps < 0.15:
-                        print('Early stop, suspicion of overfitting')
-                        break
+                    # if loss*accum_steps < 0.15:
+                    #     print('Early stop, suspicion of overfitting')
+                    #     break
                     loss.backward()
                     if (j+1) % accum_steps == 0:
                         # Clip the norm of the gradients to 1.0.
