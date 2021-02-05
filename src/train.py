@@ -1,6 +1,6 @@
 import warnings
 warnings.filterwarnings("ignore")
-from new_trainer import ClassifTrainer
+from trainer import ClassifTrainer
 import argparse
 
 
@@ -8,7 +8,7 @@ def main():
     parser = argparse.ArgumentParser(description='main',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument('--dataset_dir', default='datasets/agnews/',
+    parser.add_argument('--dataset_dir', default='datasets/dbpedia/',
                         help='dataset directory')
     parser.add_argument('--label_names_file', default='label_names_1.txt',
                         help='file containing label names (under dataset directory)')
@@ -32,7 +32,7 @@ def main():
                         help='language model MLM top prediction cutoff')
     parser.add_argument('--category_vocab_size', type=int, default=100,
                         help='category vocabulary size for each class')
-    parser.add_argument('--match_threshold', type=int, default=20,
+    parser.add_argument('--match_threshold', type=int, default=15,
                         help='category indicative words matching threshold')
     parser.add_argument('--max_len', type=int, default=512,
                         help='length that documents are padded/truncated to')

@@ -873,7 +873,7 @@ class ClassifTrainer(object):
         return joint_vocab_tokens, joint_vocab
 
 
-    def compute_preset_negative(self,docs = None, verbose = None, loader_name = 'pre_negative_dataloader.pt'):
+    def compute_preset_negative(self,docs = None, verbose = None, loader_name = 'pre_negative_dataset.pt'):
         print("Computing preset of possible negative texts")
         loader_file = os.path.join(self.dataset_dir,loader_name)
         if os.path.exists(loader_file):
@@ -941,12 +941,12 @@ class ClassifTrainer(object):
             self.pre_negative_dataloader = dataloader
 
             ### Export
-            torch.save(self.pre_negative_dataloader,os.path.join(self.dataset_dir,loader_name))
+            torch.save(self.pre_negative_dataset,os.path.join(self.dataset_dir,loader_name))
         
 
-    def compute_set_negative(self, model = None, relative_factor_pos_neg = 3, early_stopping = True, topk = 10, min_similar_words = 0,
+    def compute_set_negative(self, model = None, relative_factor_pos_neg = 10, early_stopping = True, topk = 10, min_similar_words = 0,
                                 max_category_word = 0, verbose = None, device = None, 
-                                loader_name = 'pre_negative_dataloader.pt', loader_cate_name='mcp_train.pt'):
+                                loader_name = 'pre_negative_dataset.pt', loader_cate_name='mcp_train.pt'):
 
         print('Compute Negative Training Set')
         if device is None:
@@ -956,8 +956,11 @@ class ClassifTrainer(object):
         if verbose is None:
             verbose = self.verbose
         model.to(device)
-
-        self.compute_preset_negative(loader_name=loader_name)
+        if os.path.exists(os.path.join(self.dataset_dir,loader_name)):
+            self.pre_negative_dataset = torch.load(os.path.join(self.dataset_dir,loader_name))
+            self.pre_negative_dataloader = torch.utils.data.DataLoader(self.pre_negative_dataset, shuffle = True, batch_size = self.eval_batch_size)
+        else:
+            self.compute_preset_negative(loader_name=loader_name)
             # self.pre_negative_dataloader = torch.load(loader_file)
         if os.path.exists(os.path.join(self.dataset_dir,'negative_dataset.pt')):
             print('Loading results')
@@ -965,7 +968,9 @@ class ClassifTrainer(object):
         else:
             # Parameters controlling the size of the neg set
             relative_factor_pos_neg = relative_factor_pos_neg
-            early_stopping = True
+            if early_stopping is None:
+                early_stopping = self.early_stop
+            early_stopping = early_stopping
 
             verified_negative = []
             ground_label = []
