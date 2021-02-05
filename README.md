@@ -219,10 +219,7 @@ trainer.self_train(epochs=args.self_train_epochs, loader_name=args.final_model)
 ```
 The method refines the model on the whole dataset this time by using the most 'confident' predictions of the trained model (strecthing predictions either to 1 or 0).
 
-## Running on new datasets
 
-## Next Steps - Improvements
-Uncertainty use.
 
 
 
