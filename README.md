@@ -128,12 +128,12 @@ artist          | ??            | ?             | ??            |
 Keywords      | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
 Good          | 80.5            | 77.0%            | 84.2%            |
-Bad           | ??            | ??            | ??            |
+
 
 To compare with other benchmark
 Model         | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
-Cate          | ??            | ?             | ??            |
+Cate (good/bad) | ??            | ?             | ??            |
 
 
 
