@@ -8,7 +8,7 @@ def main():
     parser = argparse.ArgumentParser(description='main',
                                      formatter_class=argparse.ArgumentDefaultsHelpFormatter)
     
-    parser.add_argument('--dataset_dir', default='datasets/dbpedia/',
+    parser.add_argument('--dataset_dir', default='datasets/agnews/',
                         help='dataset directory')
     parser.add_argument('--label_names_file', default='label_names_1.txt',
                         help='file containing label names (under dataset directory)')
@@ -24,9 +24,9 @@ def main():
                         help='the name of the final classification model to save to')
     parser.add_argument('--out_file', default='out.txt',
                         help='model predictions on the test corpus if provided')
-    parser.add_argument('--eval_batch_size', type=int, default=32,
+    parser.add_argument('--eval_batch_size', type=int, default=64,
                         help='batch size per GPU for evaluation; bigger batch size makes training faster')
-    parser.add_argument('--train_batch_size', type=int, default=8,
+    parser.add_argument('--train_batch_size', type=int, default=32,
                         help='batch size per GPU for training')
     parser.add_argument('--top_pred_num', type=int, default=50,
                         help='language model MLM top prediction cutoff')
@@ -34,11 +34,11 @@ def main():
                         help='category vocabulary size for each class')
     parser.add_argument('--match_threshold', type=int, default=15,
                         help='category indicative words matching threshold')
-    parser.add_argument('--max_len', type=int, default=512,
+    parser.add_argument('--max_len', type=int, default=200,
                         help='length that documents are padded/truncated to')
     parser.add_argument('--update_interval', type=int, default=50,
                         help='self training update interval; 50 is good in general')
-    parser.add_argument('--accum_steps', type=int, default=16,
+    parser.add_argument('--accum_steps', type=int, default=4,
                         help='gradient accumulation steps during training')
     parser.add_argument('--mcp_epochs', type=int, default=3,
                         help='masked category prediction training epochs; 3-5 usually is good depending on dataset size (smaller dataset needs more epochs)')
@@ -50,9 +50,7 @@ def main():
                         help='number of gpus to use')
     parser.add_argument('--dist_port', type=int, default=12345,
                         help='distributed training port id; any number between 10000 and 20000 will work')
-    parser.add_argument('--loop_over_vocab', type=int, default=2,
-                        help='Number of loop over the category vocabulary in a automatic fashion to refine it.')
-    parser.add_argument("--true_label", type = str, default = "1", 
+    parser.add_argument("--true_label", type = str, default = "0", 
                     help=" name of the ground truth labels of interest, must be number of labels separated by a space")
     
 

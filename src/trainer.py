@@ -32,9 +32,8 @@ from nltk.corpus import wordnet as wn
 ## TO DO : IMPLEMENT THE CASE WHEN NO GROUND TRUTH IS AVAILABLE
 ## TO DO : MULTI GPU
 ## TO DO : MASK SPECIFIC KEYWORD INSTEAD OF RANDOM WORDS
-## TO DO : SAVE SELF TRAINING TRACES
 
-## TO DO : DO NOT ADD EXTRA CLASS IF NOT ENOUGH DATA POINTS
+
 
 ## UTILITARY FUNCTIONS
 
@@ -139,29 +138,18 @@ class ClassifTrainer(object):
         self.non_accepted_words = []
         self.vocab_loop_counter = 0 ### TO DO : move to the right method
         
-        
-        self.loop_over_vocab = args.loop_over_vocab  ### 
         self.dont_include_neg_class = False
         self.label_names_used = {}
 
         self.true_label = [int(i) for i in str(args.true_label).split(' ')]
         print('True Label', self.true_label)
         print('occurences', self.occurences_per_class)
+        print('all labels', self.all_label_names,self.all_label_name_ids)
         self.verbose = True
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-        #keywords ### TO DO CHECK IF NECESSARY? REPLACE BY self.true_label
-        self.positive_keywords = [2]
-        self.negative_keywords = [] ### you give a keyword that is assign to a negative label
-        
-        
 
-    def add_positive_keyword(self, keyword):
-        self.positive_keywords.append(keyword)
-
-    def add_negative_keyword(self, keyword):
-        self.negative_keywords.append(keyword)
 
 
     # set up distributed training
@@ -202,6 +190,7 @@ class ClassifTrainer(object):
                     occurences_per_class[i] += int(keyword.lower() in doc.lower()[:self.max_len])
         print('occurences_per_class',occurences_per_class)
         return occurences_per_class
+
 
 
     # convert a list of strings to token ids
@@ -387,8 +376,8 @@ class ClassifTrainer(object):
         print(f"Label names used for each class are: {self.label_name_dict}")
         print((f'Label names positivity is: {self.label_name_positivity}'))
         self.label2class = {}
-        self.all_label_name_ids = [self.mask_id]
-        self.all_label_names = [self.tokenizer.mask_token]
+        self.all_label_name_ids = []
+        self.all_label_names = []
         for class_idx in self.label_name_dict:
             for word in self.label_name_dict[class_idx]:
                 assert word not in self.label2class, f"\"{word}\" used as the label name by multiple classes!"
@@ -543,6 +532,8 @@ class ClassifTrainer(object):
                                 if name in self.category_vocab[i]:
                                     new_label_name = name
                                     self.label_names_used[i].append(self.inv_vocab[new_label_name])
+                                    self.all_label_names.append(self.inv_vocab[new_label_name])
+                                    self.all_label_name_ids(new_label_name)
                                     print('new label name', self.inv_vocab[new_label_name], frequency)
                                     print('new label name used :', self.label_names_used)
                                     break
@@ -682,9 +673,9 @@ class ClassifTrainer(object):
         print('Computing statistics Positive set')
     
         if positive_label is None:
-            positive_label = self.true_label
+            positive_label = [self.true_label[i] for i in range(len(self.label_name_positivity)-1) if self.label_name_positivity[i]==1]
         if negative_label is None :
-            negative_label = self.negative_keywords
+            negative_label = [self.true_label[i] for i in range(len(self.label_name_positivity)-1) if self.label_name_positivity[i]==0]
         assert(len(positive_label)>0)
         loader_file = os.path.join(self.dataset_dir, loader_name)
         if os.path.exists(loader_file):
@@ -961,7 +952,6 @@ class ClassifTrainer(object):
             self.pre_negative_dataloader = torch.utils.data.DataLoader(self.pre_negative_dataset, shuffle = True, batch_size = self.eval_batch_size)
         else:
             self.compute_preset_negative(loader_name=loader_name)
-            # self.pre_negative_dataloader = torch.load(loader_file)
         if os.path.exists(os.path.join(self.dataset_dir,'negative_dataset.pt')):
             print('Loading results')
             self.negative_dataset = torch.load(os.path.join(self.dataset_dir,'negative_dataset.pt'))
@@ -1059,7 +1049,8 @@ class ClassifTrainer(object):
 
 
     def train(self, model = None, batch_size = None, accum_steps = 8, epochs = 3, loader_positive = 'mcp_train.pt', 
-                loader_negative = 'negative_dataset.pt',weighted_sampler = True,  device = None, model_loader = 'model.pt'):
+                loader_negative = 'negative_dataset.pt',weighted_sampler = True, mask_keyword = True, random_masking = True,
+                device = None, model_loader = 'model.pt'):
 
 
         model_loader_file = os.path.join(self.dataset_dir,'model.pt')
@@ -1129,6 +1120,8 @@ class ClassifTrainer(object):
 
         if os.path.exists(negative_loader_file):
             self.negative_dataset = torch.load(negative_loader_file)
+        elif hasattr(self, 'negative_dataset'):
+            pass
         elif self.dont_include_neg_class:
             pass
         else:
@@ -1195,9 +1188,9 @@ class ClassifTrainer(object):
 
         ### TRAINING HYPERPARAMETERS AND PARAMETERS
 
-        accum_steps = accum_steps
+        accum_steps = self.accum_steps
         epochs = epochs
-        learning_rate = 1e-4
+        learning_rate = 1e-5
         train_loss = nn.CrossEntropyLoss()
         total_steps = len(train_loader) * epochs / accum_steps
         number_of_mask = 2
@@ -1216,21 +1209,22 @@ class ClassifTrainer(object):
             'neg_set_accuracy' :neg_set_accuracy,
             'min occurences' : self.minimum_occurences_per_class}
 
-        optimizer = AdamW([{'params' : filter(lambda p: p.requires_grad, self.model.bert.parameters()), 'lr' : 0.5e-1*learning_rate}, 
+        optimizer = AdamW([{'params' : filter(lambda p: p.requires_grad, self.model.bert.parameters()), 'lr' : 1e-2*learning_rate}, 
                             {'params' : filter(lambda p: p.requires_grad, self.model.classifier.parameters()), 'lr' : learning_rate}], eps=1e-8)
         scheduler = get_linear_schedule_with_warmup(optimizer, num_warmup_steps=0.1*total_steps, num_training_steps=total_steps)
 
 
-        number_of_mask = 1 
-        # Metrics
-        losses_track = []
-        accuracies = []
-        precisions = []
-        recalls = []
-        f1_scores = []
-        global_steps = []
+
+        ### Metrics
+        self.losses_track = []
+        self.accuracies = []
+        self.precisions = []
+        self.recalls = []
+        self.f1_scores = []
+        self.global_steps = []
 
         try:
+            ### TRAINING LOOPS
             for i in range(epochs):
                 self.model.train()
                 total_train_loss = 0
@@ -1240,12 +1234,21 @@ class ClassifTrainer(object):
                     input_ids = batch[0].to(device)
                     input_mask = batch[1].to(device)
                     labels = batch[2].to(device)
-
+                   
+                    ### MASKING KEYWORD
+                    if mask_keyword:
+                        for keyword_token in self.all_label_name_ids:
+                            probability_of_replacement = 0.99
+                            if random.random()<probability_of_replacement:
+                                inputs_ids = ~(inputs_ids==keyword_token)*inputs_ids + (inputs_ids==keyword_token)*self.tokenizer.mask_token_id
 
                     ### RANDOM MASKING
-                    random_masking = random.choices(list(range(199)),k = number_of_mask * input_ids.size(0))
-                    for i, mask_pos in enumerate(random_masking):
-                        input_ids[i%input_ids.size(0),mask_pos+1] = self.tokenizer.get_vocab()[self.tokenizer.mask_token]
+                    if random_masking :
+                        max_length_mask = input_mask.sum(-1).max().item()
+                        random_mask_list = random.choices(list(range(max_length_mask-1)),k = number_of_mask * input_ids.size(0))
+                        for i, mask_pos in enumerate(random_mask_list):
+                            input_ids[i%input_ids.size(0),mask_pos+1] = self.tokenizer.mask_token_id
+
                     
                     ### PREDICTION
                     logits = self.model(input_ids, 
@@ -1256,14 +1259,12 @@ class ClassifTrainer(object):
                     logits_cls = logits[:,0]
                     loss = train_loss(logits_cls.contiguous().view(-1, self.num_class), labels.contiguous().view(-1)) / accum_steps            
                     total_train_loss += loss.item()
-                    # if loss*accum_steps < 0.15:
-                    #     print('Early stop, suspicion of overfitting')
-                    #     break
+
                     loss.backward()
                     if (j+1) % accum_steps == 0:
                         # Clip the norm of the gradients to 1.0.
                         
-                        losses_track.append(loss*accum_steps)
+                        self.losses_track.append(loss*accum_steps)
                         nn.utils.clip_grad_norm_(self.model.parameters(), 1.0)
                         optimizer.step()
                         scheduler.step()
@@ -1273,11 +1274,11 @@ class ClassifTrainer(object):
                     if j % (3*accum_steps) == 0 :
                         print('loss',loss*accum_steps)
                         accuracy, precision, recall, f1_score = self.test(self.model, number = 1024)
-                        accuracies.append(accuracy)
-                        precisions.append(precision)
-                        recalls.append(recall)
-                        f1_scores.append(f1_score)
-                        global_steps.append(j)
+                        self.accuracies.append(accuracy)
+                        self.precisions.append(precision)
+                        self.recalls.append(recall)
+                        self.f1_scores.append(f1_score)
+                        self.global_steps.append(j)
                 avg_train_loss = torch.tensor([total_train_loss / len(train_loader) * accum_steps]).to(device)
                 print(f"Average training loss: {avg_train_loss.mean().item()}")
 
@@ -1285,11 +1286,11 @@ class ClassifTrainer(object):
             print(err)
 
         ### Export
-        p.dump(accuracies,open(os.path.join(self.dataset_dir,'accuracy.p'),'wb'))
-        p.dump(losses_track,open(os.path.join(self.dataset_dir,'loss.p'),'wb'))
-        p.dump(precisions,open(os.path.join(self.dataset_dir,'precision.p'),'wb'))
-        p.dump(recalls,open(os.path.join(self.dataset_dir,'recall.p'),'wb'))
-        p.dump(f1_scores,open(os.path.join(self.dataset_dir,'f1_score.p'),'wb'))
+        p.dump(self.accuracies,open(os.path.join(self.dataset_dir,'accuracy.p'),'wb'))
+        p.dump(self.losses_track,open(os.path.join(self.dataset_dir,'loss.p'),'wb'))
+        p.dump(self.precisions,open(os.path.join(self.dataset_dir,'precision.p'),'wb'))
+        p.dump(self.recalls,open(os.path.join(self.dataset_dir,'recall.p'),'wb'))
+        p.dump(self.f1_scores,open(os.path.join(self.dataset_dir,'f1_score.p'),'wb'))
         p.dump(parameters, open(os.path.join(self.dataset_dir,'parameters.p'), 'wb'))
         torch.save(self.model.state_dict(), os.path.join(self.dataset_dir,'model.pt'))
 
@@ -1331,13 +1332,6 @@ class ClassifTrainer(object):
     def self_train_batches(self, rank, model, self_train_loader, optimizer, scheduler, test_dataset_loader):
 
 
-               # Metrics
-        losses_track = []
-        accuracies = []
-        precisions = []
-        recalls = []
-        f1_scores = []
-        global_steps = []
 
         model.train()
         total_train_loss = 0
@@ -1363,11 +1357,6 @@ class ClassifTrainer(object):
                     optimizer.step()
                     scheduler.step()
                     model.zero_grad()
-            # if self.with_test_label:
-            #     acc = self.inference(model, test_dataset_loader, rank, return_type="acc")
-            #     gather_acc = [torch.ones_like(acc) for _ in range(self.world_size)]
-            #     dist.all_gather(gather_acc, acc)
-            #     acc = torch.tensor(gather_acc).mean().item()
 
 
 
@@ -1381,14 +1370,13 @@ class ClassifTrainer(object):
                 print(f"Average training loss: {avg_train_loss.mean().item()}")
                 ### TEST SCORE
                 accuracy, precision, recall, f1_score = self.test(model, number = 1024)
-                losses_track.append(loss*self.accum_steps)
-                accuracies.append(accuracy)
-                precisions.append(precision)
-                recalls.append(recall)
-                f1_scores.append(f1_score)
-                global_steps.append(j)
-                # if self.with_test_label:
-                #     print(f"Test acc: {acc}")
+                self.losses_track.append(loss*self.accum_steps)
+                self.accuracies.append(accuracy)
+                self.precisions.append(precision)
+                self.recalls.append(recall)
+                self.f1_scores.append(f1_score)
+                self.global_steps.append(j)
+
         except RuntimeError as err:
             self.cuda_mem_error(err, "train", rank)
 
@@ -1419,9 +1407,56 @@ class ClassifTrainer(object):
             print(f"Saving final model to {loader_file}")
             torch.save(model.module.state_dict(), loader_file)
 
+            ### Export 
+            if self.only_self_training_available:
+                p.dump(self.accuracies,open(os.path.join(self.dataset_dir,'self_train_accuracy.p'),'wb'))
+                p.dump(self.losses_track,open(os.path.join(self.dataset_dir,'self_train_loss.p'),'wb'))
+                p.dump(self.precisions,open(os.path.join(self.dataset_dir,'self_train_precision.p'),'wb'))
+                p.dump(self.recalls,open(os.path.join(self.dataset_dir,'self_train_recall.p'),'wb'))
+                p.dump(self.f1_scores,open(os.path.join(self.dataset_dir,'self_train_f1_score.p'),'wb'))
+            else:
+                p.dump(self.accuracies,open(os.path.join(self.dataset_dir,'accuracy.p'),'wb'))
+                p.dump(self.losses_track,open(os.path.join(self.dataset_dir,'loss.p'),'wb'))
+                p.dump(self.precisions,open(os.path.join(self.dataset_dir,'precision.p'),'wb'))
+                p.dump(self.recalls,open(os.path.join(self.dataset_dir,'recall.p'),'wb'))
+                p.dump(self.f1_scores,open(os.path.join(self.dataset_dir,'f1_score.p'),'wb'))               
+
+
+
     # self training
     def self_train(self, epochs, loader_name="final_model.pt"):
         loader_file = os.path.join(self.dataset_dir, loader_name)
+
+        # Metrics
+        if hasattr(self, 'losses_track'):
+            pass
+        else:
+            self.losses_track = []
+            self.only_self_training_available = True
+        if hasattr(self, 'accuracies'):
+            pass
+        else:
+            self.accuracies = []
+        if hasattr(self, 'precisions'):
+            pass
+        else:
+            self.precisions = []
+        if hasattr(self, 'recalls'):
+            pass
+        else:
+            self.recalls = []
+        if hasattr(self, 'f1_scores'):
+            pass
+        else:
+            self.f1_scores = []
+        if hasattr(self, 'global_steps'):
+            pass
+        else:
+            self.global_steps = []
+
+
+
+
         if os.path.exists(loader_file):
             print(f"\nFinal model {loader_file} found, skip self-training")
         else:
