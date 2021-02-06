@@ -100,6 +100,10 @@ Results are obviously depending on what the user looks for.
 Here we take as an hypothesis that one is looking for a combination of the known labels so we can track results with proper metrics.
 
 ### AGNews
+The texts are varied and long enough. There are 30k texts in each class, and class are fairly general in terms of semantics. 
+
+All that lead to good results. 
+
 
 Keywords      | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
@@ -114,6 +118,11 @@ Model         | F1 - score    |    Precision  |     Recall    |
 Cate          | ??            | ??            |     ??        |
 
 ### DBPedia
+This dataset has proven to be way more complicated. Texts are of varied length, some being extremely short. 
+There are 12 classes. The leads to severe imbalance in the positive/negative training sets. 
+Another challenge is to grasp the whole complexity of the dataset. 
+
+On the training set the model learns great but fail to generalize. It is not even about learning by heart because the model becomes almost perfect before even the end of epoch 1. It is probably due to the constitution of the training set with pseudo labels. Selecting negative samples is an easy task but it does not mean the all classes are represented. Also the positive samples selected appear to be very easy. For instance, for 'athlete', they almost all have very similar structure : "X is an athlete born in ...." and this may cause the failure to generalize. Indeed, if the model learns how to classify texts talking about nature or athlete, what should it predict when it comes accross an artist description. All that lies ground for further research.
 
 Keywords      | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
@@ -124,6 +133,9 @@ artist          | ??            | ?             | ??            |
 
 
 ### IMDB
+
+Classifying based on adjective is a challenging task with our methods because on of the most likely replacement word of an adjective is its antonym (for good and bad). As a result, when a keyword is an adjective, the model automatically adds its antonym as opposite keyword to be able to build relevant category vocabulary.
+Hence the good results. 
 
 Keywords      | F1 - score    |    Precision  |     Recall    |  
 ------------- | ------------- |-------------- | ------------  |
