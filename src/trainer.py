@@ -21,7 +21,6 @@ import os
 import shutil
 import sys
 from tqdm import tqdm
-from model import LOTClassModel
 import pandas as pd
 import numpy as np
 from transformers import BertTokenizer, AdamW, get_linear_schedule_with_warmup
