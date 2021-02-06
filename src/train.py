@@ -61,22 +61,22 @@ def main():
     trainer = ClassifTrainer(args)
 
     # Construct category vocabulary
-    trainer.category_vocabulary(top_pred_num=args.top_pred_num, category_vocab_size=args.category_vocab_size)
+    # trainer.category_vocabulary(top_pred_num=args.top_pred_num, category_vocab_size=args.category_vocab_size)
 
     # Construct positive class
-    trainer.prepare_mcp(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
+    # trainer.prepare_mcp(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
 
     ##test
 
-    trainer.training_set_statistics()
-    trainer.compute_preset_negative()
-    trainer.compute_set_negative()
+    # trainer.training_set_statistics()
+    # trainer.compute_preset_negative()
+    # trainer.compute_set_negative()
     
     # Training with masked category prediction
-    trainer.train()
+    # trainer.train()
 
     # Self-training 
-    trainer.prepare_mcp(args.top_pred_num, args.match_threshold)
+    # trainer.prepare_mcp(args.top_pred_num, args.match_threshold)
     trainer.self_train(epochs=args.self_train_epochs, loader_name=args.final_model)
     # Write test set results
     #if args.test_file is not None:

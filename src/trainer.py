@@ -669,6 +669,14 @@ class ClassifTrainer(object):
 
 
 
+
+
+
+#####################################################  ESTIMATE ACCURACY OF THE PSEUDO POSITIVE SET #######################################################
+
+
+
+
     def training_set_statistics(self, positive_label = None, negative_label = None, loader_name = "mcp_train.pt"):
         print('Computing statistics Positive set')
     
@@ -719,12 +727,23 @@ class ClassifTrainer(object):
 
 
 
+
+
+
+##############################################################################  TEST METRICS ###########################################################################
+
+
+
+
+
     def loading_for_test(self, loader_name='train.txt', loader_label_name = 'train_labels.txt'):
         corpus = open(os.path.join(self.dataset_dir,loader_name), encoding="utf-8")
         docs = [doc.strip() for doc in corpus.readlines()]
         true_labels = open(os.path.join(self.dataset_dir,loader_label_name), encoding="utf-8")
         docs_labels = [int(doc.strip()) for doc in true_labels.readlines()]
         return docs, docs_labels
+
+
 
     def test(self, model,test_data = 'test.txt',test_data_labels = 'test_labels.txt', number = 1024, test_batch_size = 32, all = False, binary = True, true_label = None, device = None):
         if true_label is None:
@@ -813,6 +832,15 @@ class ClassifTrainer(object):
         model.train()
         return accuracy, precision, recall, f1_score
 
+
+
+
+
+##################################################################################################################################################################
+
+
+
+
     def return_all_keywords_related_vocab(self, positive = True, negative = False, loader_name = "category_vocab.pt"):
         '''
         The function takes as input the category vocab built around the different keywords , the type of keywords one is interested in 'positive', 'negative',
@@ -864,6 +892,15 @@ class ClassifTrainer(object):
         return joint_vocab_tokens, joint_vocab
 
 
+
+
+
+####################################################    COMPUTE NEGATIVE SET ##############################################################################################
+
+
+
+
+
     def compute_preset_negative(self,docs = None, verbose = None, loader_name = 'pre_negative_dataset.pt'):
         print("Computing preset of possible negative texts")
         loader_file = os.path.join(self.dataset_dir,loader_name)
@@ -875,6 +912,8 @@ class ClassifTrainer(object):
             negative_doc_label = []
 
             list_all_positive_words_tokens, list_all_positive_words = self.joint_cate_vocab(positive = True, negative = False, min_occurences=150)
+######### TO DO JOFFREY: add ici les mots ajouter par l'user si il en ajoute des positifs
+
             if docs is None:
                 try:
                     docs = self.train_docs
@@ -972,6 +1011,8 @@ class ClassifTrainer(object):
             min_similar_words = min_similar_words
             max_category_word = max_category_word
             list_positive_words_tokens, list_positive_words = self.joint_cate_vocab(positive = True, min_occurences = 300)
+######### TO DO JOFFREY: add ici les mots ajouter par l'user si il en ajoute des positifs
+
             print('list_positive_words',list_positive_words)
             # Computations
             with torch.no_grad():
@@ -1046,6 +1087,13 @@ class ClassifTrainer(object):
             else :
                 self.negative_dataset = self.pre_negative_dataloader.dataset
        
+
+
+
+####################################################################   TRAIN    ###############################################################################
+
+
+
 
 
     def train(self, model = None, batch_size = None, accum_steps = 8, epochs = 3, loader_positive = 'mcp_train.pt', 
@@ -1296,6 +1344,10 @@ class ClassifTrainer(object):
 
 
 
+#############################################################     SELF TRAINING     ##################################################################################
+
+
+
     # prepare self training data and target distribution
     def prepare_self_train_data(self, rank, model, idx):
 
@@ -1474,7 +1526,7 @@ class ClassifTrainer(object):
             mp.spawn(self.self_train_dist, nprocs=self.world_size, args=(epochs, loader_name))
     
     # use a model to do inference on a dataloader
-    def inference(self, model, dataset_loader, rank, return_type):
+    def inference(self, model, dataset_loader, rank, return_type, uncertainty = True):
         if return_type == "data":
             all_input_ids = []
             all_input_mask = []
@@ -1485,16 +1537,31 @@ class ClassifTrainer(object):
         elif return_type == "pred":
             pred_labels = []
         model.eval()
+        if uncertainty:
+            model.train()
+            
         try:
             for batch in dataset_loader:
                 with torch.no_grad():
                     input_ids = batch[0].to(rank)
                     input_mask = batch[1].to(rank)
-                    logits = model(input_ids,
-                                   pred_mode="classification",
-                                   token_type_ids=None,
-                                   attention_mask=input_mask)
-                    logits = logits[:, 0, :]
+                    if uncertainty:
+                        logits_list = []
+                        for j in range(10): 
+                            logits = model(input_ids,
+                                        pred_mode="classification",
+                                        token_type_ids=None,
+                                        attention_mask=input_mask)
+                            logits = logits[:, 0, :]
+                            logits_list.append(logits)
+                        logits_tensor = torch.stack(logits_list)
+                        logits = logits_tensor.mean(0)
+                    else :
+                        logits = model(input_ids,
+                                    pred_mode="classification",
+                                    token_type_ids=None,
+                                    attention_mask=input_mask)
+                        logits = logits[:, 0, :]
                     if return_type == "data":
                         all_input_ids.append(input_ids)
                         all_input_mask.append(input_mask)
@@ -1521,6 +1588,12 @@ class ClassifTrainer(object):
                 return pred_labels
         except RuntimeError as err:
             self.cuda_mem_error(err, "eval", rank)
+
+
+
+############################################################################################################################################################
+
+
     
     # use trained model to make predictions on the test set
     def write_results(self, loader_name="final_model.pt", out_file="out.txt"):
