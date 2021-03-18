@@ -115,7 +115,7 @@ class ClassifTrainer(object):
         self.vocab_size = len(self.vocab)
         self.mask_id = self.vocab[self.tokenizer.mask_token]
         self.inv_vocab = {k:v for v, k in self.vocab.items()}
-        self.read_label_names(args.dataset_dir, args.label_names_file, check_antonym=True)
+        self.read_label_names(args.dataset_dir, args.keywords_file, check_antonym=True)
         self.num_class = len(self.label_name_dict) + 1 ### Class pointing to each keyword and 1 for the rest assumed negative
         self.num_keywords = len(self.label_name_dict)
         self.minimum_occurences_per_class = 1000

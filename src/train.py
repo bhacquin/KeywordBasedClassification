@@ -10,7 +10,7 @@ def main():
     
     parser.add_argument('--dataset_dir', default='datasets/agnews/',
                         help='dataset directory')
-    parser.add_argument('--label_names_file', default='label_names_1.txt',
+    parser.add_argument('--keywords_file', default='label_names_1.txt',
                         help='file containing label names (under dataset directory)')
     parser.add_argument('--train_file', default='train.txt',
                         help='unlabeled text corpus for training (under dataset directory); one document per line')
@@ -61,10 +61,10 @@ def main():
     trainer = ClassifTrainer(args)
 
     # Construct category vocabulary
-    # trainer.category_vocabulary(top_pred_num=args.top_pred_num, category_vocab_size=args.category_vocab_size)
+    trainer.category_vocabulary(top_pred_num=args.top_pred_num, category_vocab_size=args.category_vocab_size)
 
     # Construct positive class
-    # trainer.prepare_mcp(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
+    trainer.prepare_mcp(top_pred_num=args.top_pred_num, match_threshold=args.match_threshold, loader_name="mcp_train.pt")
 
     ##test
 
@@ -73,10 +73,10 @@ def main():
     # trainer.compute_set_negative()
     
     # Training with masked category prediction
-    # trainer.train()
+    trainer.train()
 
     # Self-training 
-    # trainer.prepare_mcp(args.top_pred_num, args.match_threshold)
+    trainer.prepare_mcp(args.top_pred_num, args.match_threshold)
     trainer.self_train(epochs=args.self_train_epochs, loader_name=args.final_model)
     # Write test set results
     #if args.test_file is not None:
